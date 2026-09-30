@@ -1,29 +1,32 @@
 package com.example.hellobatch;
 
+import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
  * Point d'entrée de l'application.
  *
- * <p>Il n'y a presque rien à écrire ici : l'auto-configuration de Spring Boot
- * (activée par {@code spring-boot-starter-batch}) s'occupe de tout :
+ * <p>Il n'y a presque rien à écrire ici. Le travail est partagé entre deux mécanismes :
  * <ul>
- *   <li>elle crée l'infrastructure Spring Batch : {@code JobRepository},
- *       {@code JobLauncher}, {@code PlatformTransactionManager}...</li>
- *   <li>elle crée les tables de métadonnées Spring Batch ({@code BATCH_*})
- *       dans la base H2 en mémoire ;</li>
- *   <li>au démarrage, elle trouve le bean {@code Job} déclaré dans
+ *   <li>{@code @EnableBatchProcessing} (Spring Batch) crée l'infrastructure Spring Batch :
+ *       {@code JobRepository}, {@code JobLauncher}, {@code PlatformTransactionManager},
+ *       ainsi que les fabriques {@code JobBuilderFactory} et {@code StepBuilderFactory}
+ *       utilisées dans {@link HelloJobConfig} ;</li>
+ *   <li>l'auto-configuration de Spring Boot (activée par {@code spring-boot-starter-batch})
+ *       crée les tables de métadonnées Spring Batch ({@code BATCH_*}) dans la base H2
+ *       en mémoire, puis, au démarrage, trouve le bean {@code Job} déclaré dans
  *       {@link HelloJobConfig} et le lance automatiquement
- *       (via {@code JobLauncherApplicationRunner}).</li>
+ *       (via {@code JobLauncherCommandLineRunner}).</li>
  * </ul>
  *
- * <p>Attention : avec Spring Boot 3, il ne faut PAS ajouter
- * {@code @EnableBatchProcessing}. Cette annotation désactive
- * l'auto-configuration Batch de Spring Boot (et donc le lancement
- * automatique du job et la création des tables).
+ * <p>Attention : avec Spring Boot 1.x / Spring Batch 3, {@code @EnableBatchProcessing} est
+ * <b>obligatoire</b>. C'est l'inverse avec Spring Boot 3 / Spring Batch 5, où cette même
+ * annotation désactive l'auto-configuration : un piège classique quand on lit du code
+ * écrit pour une autre version.
  */
 @SpringBootApplication
+@EnableBatchProcessing
 public class HelloBatchApplication {
 
     public static void main(String[] args) {

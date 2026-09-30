@@ -1,20 +1,19 @@
 package com.example.hellobatch;
 
-import java.util.List;
+import java.util.Arrays;
 
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
+import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
-import org.springframework.batch.core.job.builder.JobBuilder;
-import org.springframework.batch.core.repository.JobRepository;
-import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.support.ListItemReader;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.transaction.PlatformTransactionManager;
 
 /**
  * Définition du job "helloJob".
@@ -43,6 +42,20 @@ import org.springframework.transaction.PlatformTransactionManager;
 @Configuration
 public class HelloJobConfig {
 
+    /**
+     * Fabriques fournies par {@code @EnableBatchProcessing} (voir {@link HelloBatchApplication}).
+     *
+     * <p>C'est la façon de construire jobs et steps en Spring Batch 3 et 4 : la fabrique
+     * connaît déjà le {@code JobRepository} (et, pour les steps, le transaction manager),
+     * on n'a donc pas à les passer nous-mêmes. Spring Batch 5 a supprimé ces fabriques
+     * au profit de {@code new JobBuilder(nom, jobRepository)}.
+     */
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
     // =====================================================================
     // Step 1 : Tasklet
     // =====================================================================
@@ -50,17 +63,16 @@ public class HelloJobConfig {
     /**
      * Step de type Tasklet : exécute une seule action.
      *
-     * @param jobRepository      fourni par Spring Boot ; il enregistre en base l'état
-     *                           du step (démarré, terminé, en échec...)
-     * @param transactionManager fourni par Spring Boot ; l'exécution de la tasklet
-     *                           est entourée d'une transaction
+     * <p>Le {@code JobRepository} (qui enregistre en base l'état du step : démarré, terminé,
+     * en échec...) et le transaction manager (l'exécution de la tasklet est entourée d'une
+     * transaction) sont fournis implicitement par {@code stepBuilderFactory}.
      */
     @Bean
-    public Step helloStep(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
+    public Step helloStep() {
         // "helloStep" est le nom du step : c'est ce nom qui apparaît dans les logs
         // et dans la table BATCH_STEP_EXECUTION.
-        return new StepBuilder("helloStep", jobRepository)
-                // Une Tasklet est une interface fonctionnelle : on peut l'écrire en lambda.
+        return stepBuilderFactory.get("helloStep")
+                // Une Tasklet est une interface fonctionnelle : on peut l'écrire en lambda (Java 8).
                 //  - contribution : permet de mettre à jour les compteurs du step (lectures, écritures...)
                 //  - chunkContext : donne accès au contexte d'exécution (paramètres du job, etc.)
                 .tasklet((contribution, chunkContext) -> {
@@ -68,7 +80,7 @@ public class HelloJobConfig {
                     // FINISHED    => la tasklet a terminé, on passe à la suite.
                     // CONTINUABLE => Spring Batch rappellerait la tasklet (utile pour boucler).
                     return RepeatStatus.FINISHED;
-                }, transactionManager)
+                })
                 .build();
     }
 
@@ -96,13 +108,12 @@ public class HelloJobConfig {
      * @param namesReader le reader déclaré plus bas ; Spring l'injecte ici
      */
     @Bean
-    public Step greetStep(JobRepository jobRepository, PlatformTransactionManager transactionManager,
-                          ListItemReader<String> namesReader) {
-        return new StepBuilder("greetStep", jobRepository)
+    public Step greetStep(ListItemReader<String> namesReader) {
+        return stepBuilderFactory.get("greetStep")
                 // <String, String> : type lu par le reader, type écrit par le writer.
                 // 2 : taille du chunk = nombre d'éléments par transaction (commit interval).
                 //     En production on prend plutôt 100, 500, 1000... selon le volume.
-                .<String, String>chunk(2, transactionManager)
+                .<String, String>chunk(2)
                 .reader(namesReader)
                 .processor(greetingProcessor())
                 .writer(consoleWriter())
@@ -117,7 +128,7 @@ public class HelloJobConfig {
      *
      * <p>Ici on lit une simple liste en mémoire. Dans un vrai projet on utiliserait
      * par exemple {@code FlatFileItemReader} (fichier CSV), {@code JdbcCursorItemReader}
-     * ou {@code JdbcPagingItemReader} (base de données), {@code JsonItemReader}...
+     * ou {@code JdbcPagingItemReader} (base de données)...
      *
      * <p><b>Pourquoi {@code @StepScope} ?</b> Un reader a un état : {@code ListItemReader}
      * retire les éléments au fur et à mesure qu'il les lit. Sans {@code @StepScope},
@@ -130,7 +141,8 @@ public class HelloJobConfig {
     @Bean
     @StepScope
     public ListItemReader<String> namesReader() {
-        return new ListItemReader<>(List.of("Alice", "Bob", "Charlie", "Diane", "Eve"));
+        // Arrays.asList et non List.of : List.of n'existe qu'à partir de Java 9.
+        return new ListItemReader<>(Arrays.asList("Alice", "Bob", "Charlie", "Diane", "Eve"));
     }
 
     /**
@@ -150,16 +162,17 @@ public class HelloJobConfig {
      * ItemWriter : écrit un chunk entier en une fois.
      *
      * <p>Contrairement au reader et au processor qui travaillent élément par élément,
-     * le writer reçoit un {@code Chunk} (une liste d'éléments). Cela permet d'écrire
-     * efficacement, par exemple avec un INSERT en batch JDBC.
+     * le writer reçoit une {@code List} contenant tous les éléments du chunk. Cela permet
+     * d'écrire efficacement, par exemple avec un INSERT en batch JDBC.
+     * (En Spring Batch 5, cette liste est remplacée par un objet {@code Chunk}.)
      *
      * <p>Dans un vrai projet : {@code FlatFileItemWriter} (fichier), {@code JdbcBatchItemWriter}
      * (base de données), {@code JpaItemWriter}...
      */
     private ItemWriter<String> consoleWriter() {
-        return chunk -> {
-            System.out.println("--- writing chunk of " + chunk.size() + " item(s)");
-            chunk.forEach(greeting -> System.out.println("    " + greeting));
+        return items -> {
+            System.out.println("--- writing chunk of " + items.size() + " item(s)");
+            items.forEach(greeting -> System.out.println("    " + greeting));
         };
     }
 
@@ -178,9 +191,9 @@ public class HelloJobConfig {
      * (Spring Batch permet aussi des flux conditionnels : {@code .on("FAILED").to(...)}.)
      */
     @Bean
-    public Job helloJob(JobRepository jobRepository, Step helloStep, Step greetStep) {
+    public Job helloJob(Step helloStep, Step greetStep) {
         // "helloJob" est le nom du job, enregistré dans la table BATCH_JOB_INSTANCE.
-        return new JobBuilder("helloJob", jobRepository)
+        return jobBuilderFactory.get("helloJob")
                 .start(helloStep)
                 .next(greetStep)
                 .build();

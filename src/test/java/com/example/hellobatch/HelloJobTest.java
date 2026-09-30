@@ -2,35 +2,53 @@ package com.example.hellobatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.test.JobLauncherTestUtils;
-import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.test.context.junit4.SpringRunner;
 
 /**
  * Test d'intégration du job : on démarre tout le contexte Spring, on lance le job
  * et on vérifie son résultat grâce aux métadonnées enregistrées par Spring Batch.
  */
+// JUnit 4 (celui de Spring Boot 1.5) : @RunWith(SpringRunner.class) branche Spring sur JUnit.
+// (Avec JUnit 5, c'est @SpringBootTest seul qui s'en charge.)
+@RunWith(SpringRunner.class)
 // @SpringBootTest : démarre le contexte Spring complet, comme l'application.
 // spring.batch.job.enabled=false : désactive le lancement automatique du job au démarrage.
 // Sinon le job tournerait une première fois au démarrage du contexte, puis une seconde
 // fois dans le test. C'est le test qui doit décider quand lancer le job.
 @SpringBootTest(properties = "spring.batch.job.enabled=false")
-// @SpringBatchTest : ajoute des outils de test Spring Batch au contexte,
-// notamment JobLauncherTestUtils (utilisé ci-dessous) et JobRepositoryTestUtils.
-@SpringBatchTest
-class HelloJobTest {
+public class HelloJobTest {
 
-    // JobLauncherTestUtils détecte automatiquement l'unique bean Job du contexte (helloJob).
+    /**
+     * Configuration ajoutée au contexte, uniquement pour les tests.
+     *
+     * <p>En Spring Batch 3, il faut déclarer soi-même le bean {@code JobLauncherTestUtils}
+     * (l'annotation {@code @SpringBatchTest}, qui le fait automatiquement, n'apparaît
+     * qu'en Spring Batch 4.1). Ses setters sont annotés {@code @Autowired} : Spring lui
+     * injecte l'unique bean {@code Job} (helloJob), le {@code JobLauncher} et le {@code JobRepository}.
+     */
+    @TestConfiguration
+    static class BatchTestConfig {
+        @Bean
+        public JobLauncherTestUtils jobLauncherTestUtils() {
+            return new JobLauncherTestUtils();
+        }
+    }
+
     @Autowired
     private JobLauncherTestUtils jobLauncherTestUtils;
 
     @Test
-    void jobCompletesAndProcessesAllNames() throws Exception {
+    public void jobCompletesAndProcessesAllNames() throws Exception {
         // launchJob() lance le job avec des paramètres uniques (un nombre aléatoire),
         // ce qui crée à chaque fois une nouvelle JobInstance : le test peut donc être
         // rejoué sans erreur "job déjà terminé".
@@ -44,7 +62,7 @@ class HelloJobTest {
         // avec ses compteurs (lus, écrits, filtrés, commits, rollbacks...).
         StepExecution greetStep = execution.getStepExecutions().stream()
                 .filter(s -> s.getStepName().equals("greetStep"))
-                .findFirst().orElseThrow();
+                .findFirst().orElseThrow(IllegalStateException::new);
         assertThat(greetStep.getReadCount()).isEqualTo(5);   // 5 noms lus
         assertThat(greetStep.getWriteCount()).isEqualTo(5);  // 5 salutations écrites
         assertThat(greetStep.getCommitCount()).isEqualTo(3); // chunks de 2 : 2 + 2 + 1 = 3 commits
