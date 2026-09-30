@@ -22,10 +22,11 @@ import org.springframework.test.context.junit4.SpringRunner;
 // (Avec JUnit 5, c'est @SpringBootTest seul qui s'en charge.)
 @RunWith(SpringRunner.class)
 // @SpringBootTest : démarre le contexte Spring complet, comme l'application.
-// spring.batch.job.enabled=false : désactive le lancement automatique du job au démarrage.
-// Sinon le job tournerait une première fois au démarrage du contexte, puis une seconde
-// fois dans le test. C'est le test qui doit décider quand lancer le job.
-@SpringBootTest(properties = "spring.batch.job.enabled=false")
+// C'est le test qui doit décider quand lancer le job, pas le démarrage ni l'horloge :
+//  - spring.batch.job.enabled=false : pas de lancement automatique au démarrage
+//    (déjà dans application.properties, mais on le rend explicite ici) ;
+//  - hello.scheduler.enabled=false : pas de scheduler (voir SchedulingConfig).
+@SpringBootTest(properties = {"spring.batch.job.enabled=false", "hello.scheduler.enabled=false"})
 public class HelloJobTest {
 
     /**

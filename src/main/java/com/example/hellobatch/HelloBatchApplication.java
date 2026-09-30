@@ -15,10 +15,13 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *       utilisées dans {@link HelloJobConfig} ;</li>
  *   <li>l'auto-configuration de Spring Boot (activée par {@code spring-boot-starter-batch})
  *       crée les tables de métadonnées Spring Batch ({@code BATCH_*}) dans la base H2
- *       en mémoire, puis, au démarrage, trouve le bean {@code Job} déclaré dans
- *       {@link HelloJobConfig} et le lance automatiquement
- *       (via {@code JobLauncherCommandLineRunner}).</li>
+ *       en mémoire.</li>
  * </ul>
+ *
+ * <p>Le job n'est <b>pas</b> lancé au démarrage (Spring Boot le ferait via
+ * {@code JobLauncherCommandLineRunner}, mais {@code spring.batch.job.enabled=false} dans
+ * {@code application.properties} le désactive) : c'est {@link HelloJobScheduler} qui le lance,
+ * toutes les 5 minutes.
  *
  * <p>Attention : avec Spring Boot 1.x / Spring Batch 3, {@code @EnableBatchProcessing} est
  * <b>obligatoire</b>. C'est l'inverse avec Spring Boot 3 / Spring Batch 5, où cette même
@@ -30,12 +33,16 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class HelloBatchApplication {
 
     public static void main(String[] args) {
-        // SpringApplication.run(...) démarre le contexte Spring : c'est là que le job s'exécute.
-        // Une fois le job terminé, il n'y a plus rien à faire (pas de serveur web),
-        // donc on ferme proprement le contexte avec SpringApplication.exit(...).
-        // Celui-ci renvoie un code de sortie : 0 si tout s'est bien passé, non nul si le job
-        // a échoué. On le transmet au système avec System.exit(...), ce qui est pratique
-        // quand le batch est lancé par un ordonnanceur (cron, Control-M, Kubernetes CronJob...).
-        System.exit(SpringApplication.exit(SpringApplication.run(HelloBatchApplication.class, args)));
+        // SpringApplication.run(...) démarre le contexte Spring, dont le scheduler, puis rend la main.
+        // L'application ne s'arrête pas pour autant : le scheduler tourne dans son propre thread
+        // (non "daemon"), qui garde la JVM en vie et lance le job toutes les 5 minutes.
+        // On l'arrête avec Ctrl+C (ou un kill), ce qui ferme proprement le contexte Spring.
+        //
+        // Avant l'ajout du scheduler, on écrivait :
+        //     System.exit(SpringApplication.exit(SpringApplication.run(HelloBatchApplication.class, args)));
+        // pour arrêter l'application dès la fin du job et renvoyer un code de sortie (0 = succès)
+        // à un ordonnanceur externe (cron, Control-M...). Ici ce n'est plus possible : l'application
+        // tourne en continu, il n'y a pas "un" job dont on pourrait renvoyer le résultat.
+        SpringApplication.run(HelloBatchApplication.class, args);
     }
 }

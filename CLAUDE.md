@@ -5,12 +5,12 @@ Projet d'apprentissage de Spring Batch : un Hello World pédagogique, destiné �
 ## Commandes
 
 ```bash
-mvn spring-boot:run   # lance le job (helloJob) puis l'application s'arrête
-mvn test              # tests (HelloJobTest)
+mvn spring-boot:run   # démarre l'application : helloJob tourne toutes les 5 minutes, ne s'arrête pas seule (Ctrl+C)
+mvn test              # tests (HelloJobTest, HelloJobSchedulerTest)
 mvn package           # jar exécutable dans target/
 ```
 
-Toujours lancer `mvn test` **et** `mvn spring-boot:run` après une modification (en Java 8 **et** en Java 25, voir ci-dessous), puis vérifier dans la sortie console que le job se termine en `COMPLETED`.
+Toujours lancer `mvn test` **et** `mvn spring-boot:run` après une modification (en Java 8 **et** en Java 25, voir ci-dessous), puis vérifier dans la sortie console que le job se termine en `COMPLETED`. Pour ne pas attendre 5 minutes : `java -jar target/hello-batch-0.0.1-SNAPSHOT.jar "--hello.scheduler.cron=*/10 * * * * *"` (avec `timeout`), et vérifier au moins deux lancements successifs.
 
 ## Stack (à respecter)
 
@@ -22,9 +22,13 @@ Toujours lancer `mvn test` **et** `mvn spring-boot:run` après une modification 
 
 ## Structure
 
-- `src/main/java/com/example/hellobatch/HelloBatchApplication.java` : point d'entrée Spring Boot.
-- `src/main/java/com/example/hellobatch/HelloJobConfig.java` : `helloJob` = `helloStep` (tasklet) puis `greetStep` (chunk de 2 : `ListItemReader` → processor → writer console).
+- `src/main/java/com/example/hellobatch/HelloBatchApplication.java` : point d'entrée Spring Boot (plus de `System.exit` : l'application tourne en continu).
+- `src/main/java/com/example/hellobatch/HelloJobConfig.java` : `helloJob` = `helloStep` (tasklet) puis `greetStep` (chunk de 2 : `JdbcPagingItemReader` sur la table `PERSON`, pages de 2 = taille du chunk → processor → writer console).
+- `src/main/resources/schema.sql` et `data.sql` : table `PERSON` et ses 5 noms, exécutés par Spring Boot au démarrage. Doivent rester rejouables (`CREATE TABLE IF NOT EXISTS`, `MERGE INTO`) : les contextes de test partagent la même base H2.
+- `src/main/java/com/example/hellobatch/HelloJobScheduler.java` : `@Scheduled(cron = "${hello.scheduler.cron}")` → `jobLauncher.run(helloJob, {launchTime})`. `SchedulingConfig.java` : `@EnableScheduling`, désactivable par `hello.scheduler.enabled=false`.
+- `src/main/resources/application.properties` : `spring.batch.job.enabled=false` (pas de lancement au démarrage), `hello.scheduler.cron=0 */5 * * * *`, `JdbcTemplate` en DEBUG (requêtes SQL de Spring Batch dans les logs).
 - `src/test/java/com/example/hellobatch/HelloJobTest.java` : lance le job via `JobLauncherTestUtils` et vérifie le statut et les compteurs du step.
+- `src/test/java/com/example/hellobatch/HelloJobSchedulerTest.java` : appelle deux fois `HelloJobScheduler.launch()` et vérifie que les deux lancements réussissent.
 - `README.md` : explication détaillée du code et des concepts, en français.
 
 ## Conventions
@@ -37,7 +41,9 @@ Toujours lancer `mvn test` **et** `mvn spring-boot:run` après une modification 
 
 - **`@EnableBatchProcessing` est obligatoire** (sur `HelloBatchApplication`) : c'est lui qui fournit `JobBuilderFactory` / `StepBuilderFactory`. (C'est l'inverse en Spring Batch 5.)
 - Les readers qui gardent un état doivent être des beans `@StepScope`, sinon le 2e lancement du job ne lit rien.
-- Les tests utilisent `spring.batch.job.enabled=false` pour que le job ne soit pas lancé automatiquement au démarrage du contexte.
+- Les tests utilisent `spring.batch.job.enabled=false` et `hello.scheduler.enabled=false` : le job n'est lancé ni au démarrage du contexte ni par le scheduler, seulement par le test.
+- Chaque lancement par le scheduler doit avoir des paramètres uniques (`launchTime`), sinon `JobInstanceAlreadyCompleteException` au 2e passage.
+- Le cron Spring a 6 champs (secondes en tête) : `0 */5 * * * *`, pas `*/5 * * * *`.
 - S'il y a plusieurs beans `Job`, Spring Boot 1.5 les lance **tous** ; `spring.batch.job.names` (avec un « s ») restreint la liste.
 - Sur JDK 11+, sans `javax.annotation-api`, les tables `BATCH_*` ne sont pas créées (le `@PostConstruct` de Spring Boot est ignoré sans erreur) : `Table "BATCH_JOB_INSTANCE" not found`.
 - Sur JDK 16+, une `InaccessibleObjectException ... does not "opens ..."` signifie qu'il manque un package dans les `--add-opens` du `pom.xml` (à ajouter à la fois dans le profil `jdk9-et-plus` et dans l'entrée `Add-Opens` du manifeste).

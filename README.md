@@ -2,7 +2,7 @@
 
 Un exemple minimal et commenté pour comprendre **Spring Batch 3** avec **Spring Boot 1.5**.
 
-Le job affiche un message, puis transforme une liste de noms en salutations, en les traitant par paquets.
+Le job affiche un message, puis lit une liste de noms dans une table de la base (JDBC) et la transforme en salutations, en les traitant par paquets. Il est lancé **toutes les 5 minutes** par le scheduler de Spring.
 
 - Java 8 (le code compile en Java 8, mais tourne aussi sur un JDK récent : voir [section 1](#1-lancer-lexemple))
 - Spring Boot 1.5.22 (qui embarque Spring Batch 3.0.10 et Spring Framework 4.3)
@@ -32,7 +32,7 @@ Le job affiche un message, puis transforme une liste de noms en salutations, en 
 ## 1. Lancer l'exemple
 
 ```bash
-# Lancer le job
+# Lancer l'application : le job tourne toutes les 5 minutes (à 12:00, 12:05...), Ctrl+C pour arrêter
 mvn spring-boot:run
 
 # Lancer les tests
@@ -41,7 +41,12 @@ mvn test
 # Construire un jar exécutable puis le lancer
 mvn package
 java -jar target/hello-batch-0.0.1-SNAPSHOT.jar
+
+# Pour tester sans attendre : lancer le job toutes les 10 secondes
+java -jar target/hello-batch-0.0.1-SNAPSHOT.jar "--hello.scheduler.cron=*/10 * * * * *"
 ```
+
+L'application **ne s'arrête plus d'elle-même** : elle attend le prochain lancement. Au démarrage, rien ne se passe avant la première échéance (par exemple 12:05 si on démarre à 12:03).
 
 Ces commandes fonctionnent avec **Java 8** comme avec un **JDK récent** (testé avec Java 25). Avec un JDK 9 ou plus, le profil Maven `jdk9-et-plus` s'active tout seul et ajoute les options JVM nécessaires (voir [5.1](#51-pomxml)).
 
@@ -51,10 +56,10 @@ Maven n'est pas installé ? On peut tout lancer dans Docker, par exemple avec un
 docker run --rm -v "$PWD":/app -w /app maven:3.9-eclipse-temurin-8 mvn spring-boot:run
 ```
 
-Sortie attendue (logs simplifiés) :
+Sortie attendue à chaque lancement (logs simplifiés) :
 
 ```
-Job: [SimpleJob: [name=helloJob]] launched with the following parameters: [{}]
+Job: [SimpleJob: [name=helloJob]] launched with the following parameters: [{launchTime=1790765500008}]
 Executing step: [helloStep]
 >>> Hello World from Spring Batch!
 Executing step: [greetStep]
@@ -68,6 +73,10 @@ Executing step: [greetStep]
     Hello, EVE!
 Job: [SimpleJob: [name=helloJob]] completed ... and the following status: [COMPLETED]
 ```
+
+Les logs du job indiquent le thread `[pool-2-thread-1]` : c'est le thread du scheduler, et non plus `[main]`.
+
+Entre ces lignes, on voit aussi les requêtes SQL que Spring Batch exécute sur ses tables (`Executing prepared SQL statement [...]`), voir [section 7](#7-le-jobrepository-et-les-tables-de-métadonnées).
 
 ---
 
@@ -136,12 +145,17 @@ Pour distinguer **JobInstance** et **JobExecution** : si l'import du 30/09 écho
 └── src
     ├── main/java/com/example/hellobatch
     │   ├── HelloBatchApplication.java        Point d'entrée Spring Boot
-    │   └── HelloJobConfig.java               Définition du job et de ses steps
+    │   ├── HelloJobConfig.java               Définition du job et de ses steps
+    │   ├── HelloJobScheduler.java            Lance le job toutes les 5 minutes
+    │   └── SchedulingConfig.java             Active le scheduler de Spring
+    ├── main/resources
+    │   ├── application.properties            Pas de lancement au démarrage, fréquence (cron), logs SQL
+    │   ├── schema.sql                        Création de la table PERSON (exécuté au démarrage)
+    │   └── data.sql                          Les 5 noms lus par le job (exécuté au démarrage)
     └── test/java/com/example/hellobatch
-        └── HelloJobTest.java                 Test d'intégration du job
+        ├── HelloJobTest.java                 Test d'intégration du job
+        └── HelloJobSchedulerTest.java        Test : plusieurs lancements successifs
 ```
-
-Il n'y a pas de fichier `application.properties` : la configuration par défaut de Spring Boot suffit.
 
 ---
 
@@ -184,7 +198,7 @@ Sans l'option pour `java.lang`, par exemple, l'erreur ressemble à `Inaccessible
 @EnableBatchProcessing
 public class HelloBatchApplication {
     public static void main(String[] args) {
-        System.exit(SpringApplication.exit(SpringApplication.run(HelloBatchApplication.class, args)));
+        SpringApplication.run(HelloBatchApplication.class, args);
     }
 }
 ```
@@ -194,13 +208,14 @@ Au démarrage, deux mécanismes travaillent ensemble :
 1. `@EnableBatchProcessing` (Spring Batch) crée l'infrastructure : `JobRepository`, `JobLauncher`, `PlatformTransactionManager`, ainsi que les fabriques **`JobBuilderFactory`** et **`StepBuilderFactory`** utilisées pour construire le job ;
 2. l'auto-configuration de Spring Boot (`spring-boot-starter-batch`) :
    - crée une `DataSource` vers H2 (puisque H2 est dans le classpath) ;
-   - crée les **tables de métadonnées** `BATCH_*` dans cette base (automatique pour une base embarquée) ;
-   - trouve le bean `Job` (`helloJob`) et **le lance automatiquement** (composant `JobLauncherCommandLineRunner`).
+   - crée les **tables de métadonnées** `BATCH_*` dans cette base (automatique pour une base embarquée).
+   - exécute `schema.sql` puis `data.sql` (dans `src/main/resources`) : la table `PERSON` lue par le job.
 
-Les appels imbriqués de `main` se lisent de l'intérieur vers l'extérieur :
-- `SpringApplication.run(...)` démarre le contexte, **et c'est pendant ce démarrage que le job s'exécute** ;
-- `SpringApplication.exit(...)` ferme le contexte et calcule un code de sortie (non nul si le job a échoué) ;
-- `System.exit(...)` transmet ce code au système, pour que l'ordonnanceur sache si le batch a réussi.
+Par défaut, Spring Boot lancerait aussi le job une fois au démarrage (composant `JobLauncherCommandLineRunner`). C'est désactivé dans `application.properties` (`spring.batch.job.enabled=false`) : c'est le scheduler qui lance le job (voir [5.4](#54-le-scheduler--lancer-le-job-toutes-les-5-minutes)).
+
+`SpringApplication.run(...)` démarre le contexte puis rend la main, mais l'application continue de tourner : le thread du scheduler garde la JVM en vie. On l'arrête avec Ctrl+C.
+
+> Sans scheduler, on écrit plutôt `System.exit(SpringApplication.exit(SpringApplication.run(...)))` : l'application s'arrête dès la fin du job et renvoie un code de sortie (0 = succès) à l'ordonnanceur externe qui l'a lancée (cron, Control-M...). C'était le cas dans les versions précédentes de ce projet.
 
 > ⚠️ Avec Spring Boot 1.x, **`@EnableBatchProcessing` est obligatoire** : sans elle, pas de `JobBuilderFactory` / `StepBuilderFactory`. C'est l'inverse avec Spring Boot 3 / Spring Batch 5, où cette annotation désactive l'auto-configuration. Il faut garder ça en tête quand on lit du code écrit pour une autre version.
 
@@ -253,9 +268,9 @@ public Step helloStep() {
 
 ```java
 @Bean
-public Step greetStep(ListItemReader<String> namesReader) {
+public Step greetStep(JdbcPagingItemReader<String> namesReader) {
     return stepBuilderFactory.get("greetStep")
-            .<String, String>chunk(2)
+            .<String, String>chunk(CHUNK_SIZE)   // CHUNK_SIZE = 2
             .reader(namesReader)
             .processor(greetingProcessor())
             .writer(consoleWriter())
@@ -264,7 +279,7 @@ public Step greetStep(ListItemReader<String> namesReader) {
 ```
 
 - `<String, String>` : type des éléments **lus** (un nom), puis type des éléments **écrits** (une salutation).
-- `chunk(2)` : taille du chunk (*commit interval*). Spring Batch lit et transforme 2 éléments, les écrit ensemble, puis valide la transaction. En production on utilise plutôt 100, 500 ou 1000 selon le volume.
+- `chunk(CHUNK_SIZE)`, soit 2 : taille du chunk (*commit interval*). Spring Batch lit et transforme 2 éléments, les écrit ensemble, puis valide la transaction. En production on utilise plutôt 100, 500 ou 1000 selon le volume.
 
 Déroulement complet avec 5 noms et des chunks de 2 :
 
@@ -276,23 +291,71 @@ Chunk 3 : [transaction] read Eve, read → null (fin)  → process ×1 → write
 
 Donc 5 lectures, 5 écritures et 3 commits : ce sont exactement les valeurs vérifiées par le test.
 
-Si le chunk 2 échouait, seule sa transaction serait annulée : le chunk 1 resterait validé, et une relance du job pourrait reprendre à partir de là (avec un reader qui sait enregistrer sa position, voir [section 10](#10-pour-aller-plus-loin)).
+Si le chunk 2 échouait, seule sa transaction serait annulée : le chunk 1 resterait validé, et une relance du job pourrait reprendre à partir de là, car le reader enregistre sa position (voir ci-dessous).
 
 #### Le reader : `namesReader`
+
+Les noms sont lus dans la table `PERSON` de la base H2. Spring Boot crée cette table et la remplit au démarrage, en exécutant automatiquement les fichiers `schema.sql` puis `data.sql` placés dans `src/main/resources`.
+
+```sql
+-- schema.sql
+CREATE TABLE IF NOT EXISTS PERSON (ID BIGINT PRIMARY KEY, NAME VARCHAR(100) NOT NULL);
+-- data.sql
+MERGE INTO PERSON (ID, NAME) KEY (ID) VALUES (1, 'Alice');   -- ... jusqu'à 5, 'Eve'
+```
+
+`IF NOT EXISTS` et `MERGE` (un « insère ou met à jour » propre à H2) rendent les scripts rejouables : dans les tests, plusieurs contextes Spring partagent la même base en mémoire et exécutent donc les scripts plusieurs fois.
 
 ```java
 @Bean
 @StepScope
-public ListItemReader<String> namesReader() {
-    return new ListItemReader<>(Arrays.asList("Alice", "Bob", "Charlie", "Diane", "Eve"));
+public JdbcPagingItemReader<String> namesReader(DataSource dataSource) throws Exception {
+    SqlPagingQueryProviderFactoryBean queryProvider = new SqlPagingQueryProviderFactoryBean();
+    queryProvider.setDataSource(dataSource);
+    queryProvider.setSelectClause("SELECT ID, NAME");
+    queryProvider.setFromClause("FROM PERSON");
+    queryProvider.setSortKey("ID");
+
+    JdbcPagingItemReader<String> reader = new JdbcPagingItemReader<>();
+    reader.setDataSource(dataSource);
+    reader.setQueryProvider(queryProvider.getObject());
+    reader.setPageSize(CHUNK_SIZE);
+    reader.setRowMapper((resultSet, rowNum) -> resultSet.getString("NAME"));
+    return reader;
 }
 ```
 
 - Un `ItemReader` renvoie un élément à chaque appel de `read()`, puis `null` quand il a terminé : c'est ce `null` qui met fin au step.
-- `ListItemReader` lit une liste en mémoire. C'est parfait pour un exemple ; en vrai on lirait un fichier (`FlatFileItemReader`) ou une base (`JdbcCursorItemReader`, `JdbcPagingItemReader`).
-- `Arrays.asList` et non `List.of`, qui n'existe qu'à partir de Java 9.
-- **`@StepScope` est important ici**. `ListItemReader` a un état : il retire les éléments de sa liste au fur et à mesure. Sans `@StepScope`, le bean serait un singleton créé une seule fois pour toute la vie de l'application, et au 2e lancement du job la liste serait déjà vide. Avec `@StepScope`, Spring crée **un nouveau reader à chaque exécution du step**.
-- `@StepScope` permet aussi d'injecter des paramètres du job dans le bean, par exemple `@Value("#{jobParameters['fichier']}") String fichier`.
+- La requête est décrite en morceaux (`SELECT`, `FROM`, clé de tri). Le *query provider* assemble la requête de chaque page dans le dialecte SQL de la base, détecté à partir de la `DataSource`. Spring Batch 3 n'a pas de *builder* pour ce reader, on règle donc chaque propriété à la main.
+- Le `RowMapper` transforme chaque ligne du résultat en élément : ici, juste le nom.
+- La `DataSource` est celle créée par Spring Boot, la même base que les tables `BATCH_*`.
+
+**Lecture par pages.** `JdbcPagingItemReader` ne charge pas toute la table. Il exécute une requête par page de `pageSize` lignes, garde la page en mémoire et la distribue ligne par ligne à chaque `read()`. Quand la page est épuisée, il lance la requête suivante. Voici les requêtes réellement exécutées, visibles dans les logs :
+
+```
+SELECT TOP 2 ID, NAME FROM PERSON ORDER BY ID ASC                    → Alice, Bob       (chunk 1)
+SELECT TOP 2 ID, NAME FROM PERSON WHERE ((ID > ?)) ORDER BY ID ASC   → Charlie, Diane   (chunk 2, ? = 2)
+SELECT TOP 2 ID, NAME FROM PERSON WHERE ((ID > ?)) ORDER BY ID ASC   → Eve              (chunk 3, ? = 4)
+```
+
+- `TOP 2` est la syntaxe de H2. Sur PostgreSQL ou MySQL, ce serait `LIMIT 2`.
+- Les pages suivantes ne font pas `OFFSET n`, qui devient lent sur une grosse table. Elles repartent de la **dernière valeur de la clé de tri** (`WHERE ID > dernier ID lu`), d'où l'obligation d'avoir une clé de tri **unique**.
+- La 3e page ne contient qu'une ligne, moins que `pageSize` : le reader sait que c'est la fin et renvoie `null` sans lancer de 4e requête.
+- **La taille de page n'est pas la taille du chunk.** C'est un réglage du reader (10 par défaut), indépendant du step. On les prend égales (`CHUNK_SIZE`) pour avoir exactement une requête SQL par chunk. Avec une page de 10 et des chunks de 100, chaque chunk ferait 10 requêtes.
+- L'autre reader JDBC, `JdbcCursorItemReader`, fait **une seule requête** pour tout le step et garde le curseur ouvert, en avançant d'une ligne à chaque `read()`. Il est plus simple, mais ne peut pas servir dans un step multi-threadé, et la reprise après échec est plus coûteuse (il réexécute la requête puis saute les lignes déjà lues).
+
+**Pourquoi `@StepScope` ?** Le reader a un état : la page en mémoire et sa position. Sans `@StepScope`, le bean serait un singleton créé une seule fois pour toute la vie de l'application, et au 2e lancement du job il repartirait de la fin de la table : il ne lirait rien. Avec `@StepScope`, Spring crée **un nouveau reader à chaque exécution du step**. `@StepScope` permet aussi d'injecter des paramètres du job dans le bean, par exemple `@Value("#{jobParameters['fichier']}") String fichier`.
+
+**Pourquoi le type de retour est-il `JdbcPagingItemReader` et pas `ItemReader` ?** Ce reader implémente aussi `ItemStream`, et Spring Batch appelle ses méthodes en plus de `read()` :
+
+| Méthode | Quand | Rôle |
+|---|---|---|
+| `open(executionContext)` | début du step | prépare la lecture, ou relit la position sauvegardée en cas de reprise |
+| `update(executionContext)` | avant **chaque commit** | enregistre la position dans `BATCH_STEP_EXECUTION_CONTEXT` |
+| `close()` | fin du step | libère les ressources |
+
+Avec `@StepScope`, Spring injecte un proxy qui n'implémente **que le type déclaré** en retour de la méthode `@Bean`. Si ce type était `ItemReader<String>`, le proxy n'implémenterait pas `ItemStream` : `open()` ne serait jamais appelé et la lecture échouerait avec `ReaderNotOpenException`.
+
 - En configuration XML (fréquente en Spring Batch 3), l'équivalent est l'attribut `scope="step"` sur le `<bean>`.
 
 #### Le processor : `greetingProcessor`
@@ -338,6 +401,56 @@ public Job helloJob(Step helloStep, Step greetStep) {
 - `start(...).next(...)` : exécution séquentielle. Si un step échoue, le job s'arrête en statut `FAILED` et les steps suivants ne sont pas exécutés.
 - Spring Batch permet aussi des flux conditionnels, par exemple `.on("FAILED").to(stepDeSecours)`.
 
+### 5.4 Le scheduler : lancer le job toutes les 5 minutes
+
+Spring Batch **ne sait pas planifier** un job : il sait seulement l'exécuter quand on le lui demande, via le `JobLauncher`. La planification est le rôle d'un autre outil. Ici, c'est le scheduler intégré à Spring Framework, donc aucune dépendance à ajouter.
+
+**`SchedulingConfig.java`** active le scheduler :
+
+```java
+@Configuration
+@EnableScheduling
+@ConditionalOnProperty(name = "hello.scheduler.enabled", matchIfMissing = true)
+public class SchedulingConfig {
+}
+```
+
+- Sans `@EnableScheduling`, les méthodes `@Scheduled` ne sont **jamais appelées**, et sans aucun message d'erreur.
+- `@ConditionalOnProperty` permet de couper le scheduler avec `hello.scheduler.enabled=false`. Les tests s'en servent. C'est pour ça que l'annotation est dans sa propre classe, et pas sur `HelloBatchApplication`.
+
+**`HelloJobScheduler.java`** lance le job :
+
+```java
+@Component
+public class HelloJobScheduler {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    private Job helloJob;
+
+    @Scheduled(cron = "${hello.scheduler.cron}")
+    public void scheduledLaunch() throws Exception {
+        launch();
+    }
+
+    public JobExecution launch() throws Exception {
+        JobParameters parameters = new JobParametersBuilder()
+                .addLong("launchTime", System.currentTimeMillis())
+                .toJobParameters();
+        return jobLauncher.run(helloJob, parameters);
+    }
+}
+```
+
+- **L'expression cron** vient de `application.properties` : `hello.scheduler.cron=0 */5 * * * *`. Le cron de Spring a **6 champs**, et non 5 comme le cron Unix, car il commence par les secondes : `seconde minute heure jour-du-mois mois jour-de-la-semaine`. `0 */5 * * * *` veut dire « à la seconde 0 de chaque minute multiple de 5 ».
+- **Les alternatives au cron** : `@Scheduled(fixedRate = 300000)` lance toutes les 300 000 ms, avec un premier lancement dès le démarrage. `@Scheduled(fixedDelay = 300000)` attend 5 minutes après la *fin* du lancement précédent.
+- **Le paramètre `launchTime` est indispensable.** Une JobInstance est identifiée par le nom du job et ses paramètres (voir [section 7](#7-le-jobrepository-et-les-tables-de-métadonnées)). Avec des paramètres identiques à chaque fois, le 2e lancement serait vu comme la même JobInstance, déjà terminée, et Spring Batch le refuserait (`JobInstanceAlreadyCompleteException`). L'heure du lancement rend chaque JobInstance unique.
+- **`@StepScope` sur le reader devient indispensable** : le job tourne plusieurs fois dans la même application. Sans lui, le 2e lancement ne lirait rien (voir [le reader](#le-reader--namesreader)).
+- **Pas de chevauchement** : le scheduler par défaut n'a qu'un seul thread. Si un lancement dure plus de 5 minutes, le suivant attend qu'il soit terminé.
+- `launch()` est séparée de la méthode `@Scheduled` pour que le test puisse l'appeler directement, sans attendre l'horloge.
+
 ---
 
 ## 6. Ce qui se passe à l'exécution
@@ -348,41 +461,221 @@ mvn spring-boot:run
   ├─ Spring Boot démarre
   │    ├─ crée la DataSource H2 (en mémoire)
   │    ├─ crée les tables BATCH_*
+  │    ├─ exécute schema.sql et data.sql : table PERSON avec 5 noms
   │    ├─ @EnableBatchProcessing : JobRepository, JobLauncher, TransactionManager,
   │    │                           JobBuilderFactory, StepBuilderFactory
-  │    └─ crée les beans de HelloJobConfig (helloStep, greetStep, helloJob)
+  │    ├─ crée les beans de HelloJobConfig (helloStep, greetStep, helloJob)
+  │    └─ @EnableScheduling : démarre le thread du scheduler
   │
-  ├─ JobLauncherCommandLineRunner lance helloJob
-  │    ├─ JobInstance + JobExecution créées en base         (statut STARTED)
-  │    ├─ helloStep : exécute la tasklet                    (StepExecution COMPLETED)
-  │    ├─ greetStep : 3 chunks lus / transformés / écrits   (StepExecution COMPLETED)
-  │    └─ JobExecution mise à jour                          (statut COMPLETED)
+  ├─ main() se termine, mais la JVM reste en vie (thread du scheduler)
   │
-  └─ SpringApplication.exit → code de sortie 0 → la JVM s'arrête
+  ├─ à 12:05, 12:10, 12:15... le scheduler appelle HelloJobScheduler.scheduledLaunch()
+  │    └─ jobLauncher.run(helloJob, {launchTime=...})
+  │         ├─ nouvelle JobInstance + JobExecution créées en base  (statut STARTED)
+  │         ├─ helloStep : exécute la tasklet                     (StepExecution COMPLETED)
+  │         ├─ greetStep : 3 chunks lus / transformés / écrits    (StepExecution COMPLETED)
+  │         └─ JobExecution mise à jour                           (statut COMPLETED)
+  │
+  └─ Ctrl+C → fermeture du contexte Spring → la JVM s'arrête
 ```
 
-Comme H2 est **en mémoire**, la base disparaît à l'arrêt de l'application : chaque lancement repart de zéro.
+Comme H2 est **en mémoire**, la base disparaît à l'arrêt de l'application. En revanche, tant que l'application tourne, elle accumule une JobInstance par lancement.
 
 ---
 
 ## 7. Le JobRepository et les tables de métadonnées
 
-Spring Batch enregistre tout ce qu'il fait dans ces tables :
+Le `JobRepository` enregistre tout ce que fait Spring Batch dans **6 tables**, créées au démarrage par Spring Boot (script `schema-h2.sql` de Spring Batch). Elles suivent la hiérarchie des concepts :
 
-| Table | Contenu |
-|---|---|
-| `BATCH_JOB_INSTANCE` | Une ligne par JobInstance (nom du job + clé calculée à partir des paramètres identifiants) |
-| `BATCH_JOB_EXECUTION` | Une ligne par exécution : dates de début/fin, statut, code de sortie |
-| `BATCH_JOB_EXECUTION_PARAMS` | Les paramètres de chaque exécution |
-| `BATCH_STEP_EXECUTION` | Une ligne par exécution de step : compteurs (read, write, filter, commit, rollback, skip...) |
-| `BATCH_JOB_EXECUTION_CONTEXT` / `BATCH_STEP_EXECUTION_CONTEXT` | Données sauvegardées pour pouvoir reprendre (ex. : numéro de la dernière ligne lue). En Spring Batch 3, elles sont converties en JSON par la bibliothèque XStream. |
+```
+BATCH_JOB_INSTANCE                    "le job helloJob avec launchTime=…"   (1 ligne par lancement unique)
+ └─ BATCH_JOB_EXECUTION               une tentative d'exécution             (1 ligne par tentative)
+     ├─ BATCH_JOB_EXECUTION_PARAMS    ses paramètres                        (1 ligne par paramètre)
+     ├─ BATCH_JOB_EXECUTION_CONTEXT   données sauvegardées du job           (1 ligne)
+     └─ BATCH_STEP_EXECUTION          une exécution de step                 (1 ligne par step)
+         └─ BATCH_STEP_EXECUTION_CONTEXT  données sauvegardées du step      (1 ligne)
+```
+
+Il y a aussi 3 **séquences** (`BATCH_JOB_SEQ`, `BATCH_JOB_EXECUTION_SEQ`, `BATCH_STEP_EXECUTION_SEQ`), qui ne servent qu'à générer les identifiants.
 
 Ces tables permettent à Spring Batch de :
 - **refuser de relancer** un job déjà terminé avec succès avec les mêmes paramètres (`JobInstanceAlreadyCompleteException`) ;
 - **reprendre** un job en échec au step (et à la position) où il s'était arrêté ;
 - garder un **historique** consultable.
 
-Avec une vraie base persistante (PostgreSQL, Oracle...), relancer `helloJob` avec les mêmes paramètres (ici aucun) échouerait donc la 2e fois. Deux solutions : passer un paramètre qui change à chaque lancement (par exemple la date), ou ajouter un `RunIdIncrementer` au job (`.incrementer(new RunIdIncrementer())`).
+### À quoi sert chaque table
+
+Les exemples ci-dessous sont les valeurs réellement trouvées dans H2 après deux lancements de `helloJob`.
+
+**`BATCH_JOB_INSTANCE`** : l'identité d'un traitement, « le job X avec tels paramètres ».
+- Colonnes principales : `JOB_NAME` et `JOB_KEY`, une empreinte (hash MD5) des paramètres identifiants. Le couple (`JOB_NAME`, `JOB_KEY`) est **unique**.
+- C'est grâce à elle que Spring Batch refuse de relancer un job déjà réussi avec les mêmes paramètres.
+- Exemple : `helloJob / 237a1c…`, puis `helloJob / 216680…`. Les clés sont différentes parce que `launchTime` change.
+
+**`BATCH_JOB_EXECUTION`** : une **tentative** d'exécution de cette instance.
+- Colonnes principales : `STATUS` (`STARTING` → `STARTED` → `COMPLETED` / `FAILED`), `EXIT_CODE`, `START_TIME`, `END_TIME`, `EXIT_MESSAGE` (la stack trace en cas d'échec).
+- Si un job échoue puis réussit à la relance, on a 1 `JOB_INSTANCE` et 2 `JOB_EXECUTION`.
+
+**`BATCH_JOB_EXECUTION_PARAMS`** : les paramètres de lancement, une ligne par paramètre.
+- Exemple : `KEY_NAME=launchTime, TYPE_CD=LONG, LONG_VAL=1790766945994, IDENTIFYING=Y`.
+- `IDENTIFYING=Y` : ce paramètre entre dans le calcul de `JOB_KEY`, donc dans l'identité de la JobInstance.
+
+**`BATCH_STEP_EXECUTION`** : l'exécution d'**un step**, avec tous ses **compteurs**. C'est la table à consulter pour savoir ce que le batch a traité.
+
+| `STEP_NAME` | `STATUS` | `COMMIT_COUNT` | `READ_COUNT` | `WRITE_COUNT` | `FILTER_COUNT` | `ROLLBACK_COUNT` |
+|---|---|---|---|---|---|---|
+| `helloStep` | `COMPLETED` | 1 | 0 (une tasklet ne lit rien) | 0 | 0 | 0 |
+| `greetStep` | `COMPLETED` | 3 | 5 | 5 | 0 | 0 |
+
+**`BATCH_JOB_EXECUTION_CONTEXT`** et **`BATCH_STEP_EXECUTION_CONTEXT`** : la « mémoire » du job et de chaque step, sous forme de clés-valeurs converties en JSON (par la bibliothèque XStream en Spring Batch 3).
+- Leur rôle principal est la **reprise après échec**. Un `FlatFileItemReader` y écrit par exemple `FlatFileItemReader.read.count=4200` après chaque chunk. Si le job plante, la relance repart de la ligne 4 201.
+- On peut aussi y déposer ses propres données pour les passer d'un step à l'autre.
+- Dans ce projet, elles contiennent :
+  - contexte du job : vide (`{"map":[""]}`) ;
+  - contexte des steps : des informations techniques ajoutées par Spring Batch, `batch.stepType=TaskletStep` et `batch.taskletType=ChunkOrientedTasklet` pour `greetStep`. On voit au passage qu'un step « chunk » est en réalité un `TaskletStep` ;
+  - pour `greetStep`, la **position du reader**, enregistrée par `JdbcPagingItemReader` avant chaque commit : `JdbcPagingItemReader.start.after = {ID=5}` (la dernière clé lue, pour reprendre avec `WHERE ID > 5`) et `JdbcPagingItemReader.read.count = 6` (5 noms + le dernier `read()` qui a renvoyé `null`).
+
+### À quel moment elles sont remplies
+
+Pour un lancement du job :
+
+| Moment | Ce qui se passe en base |
+|---|---|
+| **`jobLauncher.run(...)`**, avant le démarrage | `SELECT` sur `JOB_INSTANCE` : cette instance existe-t-elle déjà ? Si non : **`INSERT`** dans `JOB_INSTANCE`, `JOB_EXECUTION` (statut `STARTING`), `JOB_EXECUTION_PARAMS` et `JOB_EXECUTION_CONTEXT` |
+| **Démarrage du job** | `UPDATE JOB_EXECUTION` → `STARTED`, `START_TIME` renseigné |
+| **Démarrage de chaque step** | **`INSERT`** dans `STEP_EXECUTION` (compteurs à 0) et `STEP_EXECUTION_CONTEXT`, puis `UPDATE` → `STARTED` |
+| **Après chaque chunk** (ou chaque appel de la tasklet) | `UPDATE STEP_EXECUTION_CONTEXT` et `UPDATE STEP_EXECUTION` (compteurs), **dans la même transaction que l'écriture des données** |
+| **Fin de chaque step** | `UPDATE STEP_EXECUTION` → `COMPLETED`, `END_TIME` |
+| **Fin du job** | `UPDATE JOB_EXECUTION_CONTEXT`, puis `UPDATE JOB_EXECUTION` → `COMPLETED`, `END_TIME`, `EXIT_CODE` |
+
+Le point important est la mise à jour **après chaque chunk, dans la même transaction**. Si le chunk 3 plante, sa transaction est annulée, mais les chunks 1 et 2 sont validés, et les compteurs et le contexte en base le reflètent exactement (4 éléments lus et écrits). La base ne peut jamais indiquer « 6 écrits » alors que seulement 4 le sont réellement : c'est ce qui rend la reprise fiable.
+
+Les tables ne font que **grossir** : Spring Batch ajoute des lignes et n'en supprime jamais. Avec le scheduler, chaque lancement ajoute 1 instance, 1 exécution, 1 paramètre, 1 contexte de job, 2 exécutions de step et 2 contextes de step. Avec H2 en mémoire, tout disparaît à l'arrêt de l'application. Sur une vraie base, il faut prévoir une **purge régulière**, que Spring Batch ne fait pas lui-même.
+
+### Voir les requêtes dans les logs
+
+Spring Batch accède à ces tables via le `JdbcTemplate` de Spring. Dans `application.properties`, cette ligne affiche chaque requête dans la console :
+
+```properties
+logging.level.org.springframework.jdbc.core.JdbcTemplate=DEBUG
+```
+
+Voici la séquence d'**une** exécution de `helloJob` (logs simplifiés, colonnes abrégées) :
+
+```
+-- Le JobLauncher vérifie qu'aucune JobInstance n'existe déjà pour ces paramètres...
+SELECT JOB_INSTANCE_ID, JOB_NAME from BATCH_JOB_INSTANCE where JOB_NAME = ? and JOB_KEY = ?
+-- ... puis crée la JobInstance, la JobExecution, ses paramètres (launchTime) et son contexte
+INSERT into BATCH_JOB_INSTANCE(...)
+INSERT into BATCH_JOB_EXECUTION(...)
+INSERT into BATCH_JOB_EXECUTION_PARAMS(...)
+INSERT INTO BATCH_JOB_EXECUTION_CONTEXT (...)
+Job: [SimpleJob: [name=helloJob]] launched with the following parameters: [{launchTime=...}]
+UPDATE BATCH_JOB_EXECUTION set ... STATUS = ? ...                 -- STARTED
+
+-- Chaque step : création de la StepExecution
+INSERT into BATCH_STEP_EXECUTION(...)
+INSERT INTO BATCH_STEP_EXECUTION_CONTEXT (...)
+Executing step: [greetStep]
+UPDATE BATCH_STEP_EXECUTION set ... STATUS = ? ...                -- STARTED
+--- writing chunk of 2 item(s)
+UPDATE BATCH_STEP_EXECUTION_CONTEXT SET ...                       -- après CHAQUE chunk,
+UPDATE BATCH_STEP_EXECUTION set ... COMMIT_COUNT = ?, READ_COUNT = ?, WRITE_COUNT = ? ...
+--- writing chunk of 2 item(s)                                   -- dans la transaction du chunk
+UPDATE BATCH_STEP_EXECUTION_CONTEXT SET ...
+UPDATE BATCH_STEP_EXECUTION set ...
+--- writing chunk of 1 item(s)
+...
+UPDATE BATCH_STEP_EXECUTION set ... STATUS = ? ...                -- COMPLETED
+
+-- Fin du job
+UPDATE BATCH_JOB_EXECUTION_CONTEXT SET ...
+UPDATE BATCH_JOB_EXECUTION set ... STATUS = ? ...                 -- COMPLETED
+```
+
+Le point clé : **après chaque chunk**, Spring Batch enregistre les compteurs et le contexte du step, dans la même transaction que l'écriture des données. Si le job plante au chunk 3, la base indique exactement ce qui a été validé (2 chunks, 4 éléments). C'est ce qui permet la reprise.
+
+Les requêtes affichent des `?` à la place des valeurs. Les valeurs (`STARTED`, `COMPLETED`, compteurs...) sont affichées juste après chaque requête, grâce à cette autre ligne de `application.properties` :
+
+```properties
+logging.level.org.springframework.jdbc.core.StatementCreatorUtils=TRACE
+```
+
+C'est très bavard (une ligne par paramètre, une vingtaine par `UPDATE`) : on peut la commenter avec `#` pour n'afficher que les requêtes.
+
+### Déduire la taille des chunks
+
+La taille des chunks **n'est enregistrée dans aucune table** : Spring Batch stocke ce qui s'est passé (les compteurs), pas la configuration du step. On peut la retrouver de trois façons, de la plus fiable à la moins fiable.
+
+**1. Dans le code : la seule source sûre.**
+
+```java
+.<String, String>chunk(2)                                     // configuration Java
+```
+
+```xml
+<batch:chunk reader="..." writer="..." commit-interval="2"/>  <!-- configuration XML -->
+```
+
+La valeur vient parfois d'une propriété (`${batch.chunk.size}`) ou d'un paramètre du job (`#{jobParameters['chunkSize']}`). Il faut alors aller voir le fichier de propriétés ou les paramètres de lancement.
+
+**2. Dans les logs : chunk par chunk.** Juste avant chaque commit, Spring Batch écrit en `DEBUG` l'état du step :
+
+```properties
+logging.level.org.springframework.batch.core.step.tasklet.TaskletStep=DEBUG
+```
+
+```
+Saving step execution before commit: ... name=greetStep, readCount=2, writeCount=2, commitCount=1 ...
+Saving step execution before commit: ... name=greetStep, readCount=4, writeCount=4, commitCount=2 ...
+Saving step execution before commit: ... name=greetStep, readCount=5, writeCount=5, commitCount=3 ...
+```
+
+La différence de `readCount` entre deux lignes donne la taille de chaque chunk : 2, 2, puis 1. La taille configurée est celle des chunks « pleins », donc **2**.
+
+**3. Dans `BATCH_STEP_EXECUTION` : une estimation.**
+
+Il faut d'abord savoir que `COMMIT_COUNT` n'est pas tout à fait le nombre de chunks. Pour savoir qu'il a fini, Spring Batch doit recevoir `null` du reader. Si ce `null` arrive au début d'un nouveau tour, ce tour vide est **quand même validé** par une transaction. Avec des chunks de 2 :
+
+| Éléments lus | Chunks réels | `COMMIT_COUNT` |
+|---|---|---|
+| 5 | [2] [2] [1] | 3 |
+| 4 | [2] [2] + tour vide | 3 (et non 2) |
+| 0 | tour vide | 1 (et non 0) |
+
+Pour une exécution sans erreur, on a donc `COMMIT_COUNT − 1 = partie entière de (READ_COUNT / taille)`. On en déduit un **intervalle** :
+
+```
+READ_COUNT / COMMIT_COUNT  <  taille  ≤  READ_COUNT / (COMMIT_COUNT − 1)
+```
+
+| `READ_COUNT` | `COMMIT_COUNT` | Intervalle | Taille |
+|---|---|---|---|
+| 5 | 3 | ]1,67 ; 2,5] | **2** exactement |
+| 10 000 | 11 | ]909 ; 1 000] | entre 910 et 1 000, très probablement **1 000** |
+| 1 500 | 2 | ]750 ; 1 500] | ambigu : 1 000 ? 1 500 ? |
+
+Avec beaucoup de chunks, l'intervalle est étroit. Avec peu de chunks, il est flou. En pratique, on retient la valeur « ronde » (100, 500, 1 000…) qui tombe dans l'intervalle.
+
+```sql
+SELECT STEP_NAME, READ_COUNT, COMMIT_COUNT,
+       CAST(READ_COUNT AS DOUBLE) / COMMIT_COUNT       AS TAILLE_MIN_EXCLUE,
+       CAST(READ_COUNT AS DOUBLE) / (COMMIT_COUNT - 1) AS TAILLE_MAX
+FROM BATCH_STEP_EXECUTION
+WHERE COMMIT_COUNT > 1 AND ROLLBACK_COUNT = 0
+  AND READ_SKIP_COUNT + PROCESS_SKIP_COUNT + WRITE_SKIP_COUNT = 0;
+```
+
+Ce calcul est faux ou sans objet dans ces cas :
+- **Il y a eu des erreurs** (`ROLLBACK_COUNT > 0` ou des skips). En mode `faultTolerant`, quand l'écriture d'un chunk échoue, Spring Batch le rejoue élément par élément pour isoler le fautif : un commit par élément. D'où le filtre dans la requête.
+- **La taille n'est pas fixe** : au lieu de `.chunk(n)`, on peut fermer le chunk avec une `CompletionPolicy` (selon une durée, par exemple).
+- **Le step est une tasklet** (`helloStep`) : pas de chunk, et `COMMIT_COUNT` compte les appels de la tasklet.
+
+`FILTER_COUNT` n'intervient pas : un élément filtré par le processor a quand même été lu et compte dans le remplissage du chunk. Un chunk de 2 peut donc n'écrire qu'un seul élément, voire aucun.
+
+### Relancer un job
+
+Relancer `helloJob` avec les mêmes paramètres échouerait donc la 2e fois. C'est pour ça que le scheduler passe un paramètre `launchTime` qui change à chaque lancement. Il existe aussi le `RunIdIncrementer` (`.incrementer(new RunIdIncrementer())`), mais il n'est utilisé que par certains lanceurs (`JobLauncherCommandLineRunner`, `JobOperator.startNextInstance`), pas par un appel direct à `jobLauncher.run(...)`.
 
 ---
 
@@ -392,7 +685,7 @@ Avec une vraie base persistante (PostgreSQL, Oracle...), relancer `helloJob` ave
 
 ```java
 @RunWith(SpringRunner.class)
-@SpringBootTest(properties = "spring.batch.job.enabled=false")
+@SpringBootTest(properties = {"spring.batch.job.enabled=false", "hello.scheduler.enabled=false"})
 public class HelloJobTest {
 
     @TestConfiguration
@@ -417,11 +710,17 @@ public class HelloJobTest {
 
 - C'est un test **JUnit 4** (celui fourni par Spring Boot 1.5) : `@RunWith(SpringRunner.class)` branche Spring sur JUnit, et la classe et les méthodes de test doivent être `public`.
 - `@SpringBootTest` démarre le contexte Spring complet, comme l'application.
-- `spring.batch.job.enabled=false` **désactive le lancement automatique** du job au démarrage. Sans cela, le job tournerait une première fois au démarrage du contexte de test, puis une seconde fois dans le test : c'est le test qui doit décider quand le lancer.
+- C'est le test qui doit décider quand lancer le job, pas le démarrage ni l'horloge :
+  - `spring.batch.job.enabled=false` **désactive le lancement automatique** au démarrage (c'est déjà le cas dans `application.properties`, mais le test le rend explicite) ;
+  - `hello.scheduler.enabled=false` **désactive le scheduler** (voir [5.4](#54-le-scheduler--lancer-le-job-toutes-les-5-minutes)).
 - Le bean `JobLauncherTestUtils` est **déclaré à la main** dans une `@TestConfiguration` (l'annotation `@SpringBatchTest`, qui le fait automatiquement, n'existe qu'à partir de Spring Batch 4.1). Ses setters sont `@Autowired` : il reçoit l'unique bean `Job`, le `JobLauncher` et le `JobRepository`.
 - `launchJob()` lance le job **de façon synchrone** avec des paramètres uniques (un nombre aléatoire). Chaque appel crée donc une nouvelle JobInstance et le test peut être rejoué sans erreur « job déjà terminé ».
 - On vérifie ensuite le résultat grâce aux métadonnées : le statut du job et les compteurs du `StepExecution` de `greetStep`.
 - `JobLauncherTestUtils` permet aussi de tester **un seul step** : `launchStep("greetStep")`.
+
+`src/test/java/com/example/hellobatch/HelloJobSchedulerTest.java` vérifie ce que fait le scheduler toutes les 5 minutes, sans attendre : il appelle deux fois de suite `HelloJobScheduler.launch()` et vérifie que :
+- les deux lancements se terminent en `COMPLETED`, avec deux JobInstances différentes (grâce au paramètre `launchTime`) ;
+- le 2e lancement lit bien 5 noms (grâce à `@StepScope` sur le reader).
 
 ---
 
@@ -431,8 +730,10 @@ public class HelloJobTest {
 |---|---|---|
 | Oublier `@EnableBatchProcessing` (Spring Boot 1.x) | Aucun bean `JobBuilderFactory` / `StepBuilderFactory` au démarrage | Ajouter l'annotation sur une classe `@Configuration` |
 | Reader avec état déclaré en singleton | Le 2e lancement du job ne lit rien (0 élément) | `@StepScope` sur le bean reader (ou `scope="step"` en XML) |
-| Méthode `@Bean @StepScope` qui déclare `ItemReader<T>` en retour | `ReaderNotOpenException` : le proxy n'implémente pas `ItemStream`, donc `open()` n'est jamais appelé | Déclarer le type concret (`FlatFileItemReader<T>`) ou `ItemStreamReader<T>` |
-| Relancer un job terminé avec les mêmes paramètres | `JobInstanceAlreadyCompleteException` | Paramètres différents à chaque lancement, ou `RunIdIncrementer` |
+| Méthode `@Bean @StepScope` qui déclare `ItemReader<T>` en retour | `ReaderNotOpenException` : le proxy n'implémente pas `ItemStream`, donc `open()` n'est jamais appelé | Déclarer le type concret (`JdbcPagingItemReader<T>`, `FlatFileItemReader<T>`...) ou `ItemStreamReader<T>` |
+| Relancer un job terminé avec les mêmes paramètres | `JobInstanceAlreadyCompleteException` (par exemple au 2e passage du scheduler) | Paramètres différents à chaque lancement (`launchTime`), ou `RunIdIncrementer` |
+| Oublier `@EnableScheduling` | Les méthodes `@Scheduled` ne sont jamais appelées, sans aucune erreur | Ajouter l'annotation sur une classe `@Configuration` |
+| Cron Unix à 5 champs (`*/5 * * * *`) | Erreur au démarrage : `Cron expression must consist of 6 fields` | Ajouter le champ des secondes en tête : `0 */5 * * * *` |
 | Plusieurs `Job` dans le contexte | Spring Boot les lance **tous** au démarrage | Préciser `spring.batch.job.names=monJob` (avec un « s » en Spring Boot 1.x) |
 | Pas de base de données | Erreur au démarrage : aucune `DataSource` | Ajouter une base (H2 pour apprendre) |
 | JDK 11+ sans `javax.annotation-api` | `Table "BATCH_JOB_INSTANCE" not found` | Ajouter la dépendance (voir [5.1](#51-pomxml)) |
@@ -447,7 +748,7 @@ Idées pour faire évoluer cet exemple, dans un ordre progressif :
 
 1. **Lire un fichier CSV** avec `FlatFileItemReader` et le transformer en objets (une classe `Person` avec `firstName` et `lastName`). En Spring Batch 3, il n'y a pas de `FlatFileItemReaderBuilder` : on assemble soi-même un `FlatFileItemReader`, un `DefaultLineMapper`, un `DelimitedLineTokenizer` et un `BeanWrapperFieldSetMapper`.
 2. **Écrire en base** avec `JdbcBatchItemWriter`, puis observer les tables `BATCH_*` avec la console H2 (`spring.h2.console.enabled=true`, qui nécessite aussi `spring-boot-starter-web`).
-3. **Passer des paramètres au job** (`mvn spring-boot:run -Drun.arguments="fichier=data.csv"`) et les lire avec `@Value("#{jobParameters['fichier']}")` dans un bean `@StepScope`.
+3. **Passer des paramètres au job** : en ajouter dans `HelloJobScheduler.launch()` (par exemple `.addString("fichier", "data.csv")`) et les lire avec `@Value("#{jobParameters['fichier']}")` dans un bean `@StepScope`. (Sans scheduler, avec le lancement au démarrage par Spring Boot, ils viendraient de la ligne de commande : `java -jar hello-batch.jar fichier=data.csv`.)
 4. **Gérer les erreurs** : `.faultTolerant().skip(FlatFileParseException.class).skipLimit(10)` pour ignorer les lignes invalides, `.retry(...)` pour réessayer.
 5. **Tester la reprise** : faire échouer le job au milieu, puis le relancer avec les mêmes paramètres et constater qu'il reprend où il s'était arrêté.
 6. **Ajouter des listeners** (`JobExecutionListener`, `StepExecutionListener`, `ChunkListener`) pour tracer le début et la fin des traitements. Un reader peut lui-même implémenter `StepExecutionListener` : sa méthode `beforeStep(StepExecution)` est appelée avant la première lecture.
