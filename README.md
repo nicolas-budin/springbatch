@@ -6,7 +6,7 @@ Le job affiche un message, puis lit une liste de noms dans une table de la base 
 
 - Java 8 (le code compile en Java 8, mais tourne aussi sur un JDK récent : voir [section 1](#1-lancer-lexemple))
 - Spring Boot 1.5.22 (qui embarque Spring Batch 3.0.10 et Spring Framework 4.3)
-- Base H2 en mémoire (pour les métadonnées Spring Batch)
+- Base H2 en mémoire (pour les métadonnées Spring Batch et la table lue par le job), consultable dans le navigateur avec la console H2 : http://localhost:8080/h2-console
 - Maven
 
 > Spring Batch 3 est une version ancienne (2014-2017), qui n'est plus maintenue. Ce projet l'utilise pour aider à lire du code existant écrit avec cette version. Pour un nouveau projet, on utiliserait Spring Batch 5 : la [section 11](#11-différences-avec-spring-batch-5) liste les différences.
@@ -47,6 +47,16 @@ java -jar target/hello-batch-0.0.1-SNAPSHOT.jar "--hello.scheduler.cron=*/10 * *
 ```
 
 L'application **ne s'arrête plus d'elle-même** : elle attend le prochain lancement. Au démarrage, rien ne se passe avant la première échéance (par exemple 12:05 si on démarre à 12:03).
+
+Pendant qu'elle tourne, on peut consulter la base dans le navigateur, sur **http://localhost:8080/h2-console** :
+
+| Champ | Valeur |
+|---|---|
+| JDBC URL | `jdbc:h2:mem:testdb` (**pas** la valeur préremplie `jdbc:h2:~/test`, qui désigne une autre base : erreur `Database "..." not found`) |
+| User Name | `sa` |
+| Password | *(vide)* |
+
+Les requêtes utiles sont dans la [section 7](#consulter-la-base-avec-la-console-h2).
 
 Ces commandes fonctionnent avec **Java 8** comme avec un **JDK récent** (testé avec Java 25). Avec un JDK 9 ou plus, le profil Maven `jdk9-et-plus` s'active tout seul et ajoute les options JVM nécessaires (voir [5.1](#51-pomxml)).
 
@@ -180,6 +190,7 @@ Le parent Spring Boot fixe les versions de toutes les dépendances Spring. Sprin
 |---|---|
 | `spring-boot-starter-batch` | Spring Batch + l'auto-configuration Spring Boot (création des tables, lancement automatique du job...) |
 | `h2` | Base en mémoire. Spring Batch **a besoin d'une base** pour stocker ses métadonnées. |
+| `spring-boot-starter-web` | Serveur web Tomcat embarqué (port 8080), uniquement pour la **console H2** : une petite application web fournie par H2 pour consulter la base dans le navigateur. Activée par `spring.h2.console.enabled=true` dans `application.properties`. |
 | `javax.annotation-api` | Les annotations `@PostConstruct`, `@Resource`... Elles faisaient partie du JDK jusqu'à Java 10. Voir ci-dessous. |
 | `spring-boot-starter-test` | JUnit 4, AssertJ, `@SpringBootTest` |
 | `spring-batch-test` | `JobLauncherTestUtils` |
@@ -465,9 +476,10 @@ mvn spring-boot:run
   │    ├─ @EnableBatchProcessing : JobRepository, JobLauncher, TransactionManager,
   │    │                           JobBuilderFactory, StepBuilderFactory
   │    ├─ crée les beans de HelloJobConfig (helloStep, greetStep, helloJob)
-  │    └─ @EnableScheduling : démarre le thread du scheduler
+  │    ├─ @EnableScheduling : démarre le thread du scheduler
+  │    └─ démarre Tomcat sur le port 8080 (console H2 : /h2-console)
   │
-  ├─ main() se termine, mais la JVM reste en vie (thread du scheduler)
+  ├─ main() se termine, mais la JVM reste en vie (threads du scheduler et de Tomcat)
   │
   ├─ à 12:05, 12:10, 12:15... le scheduler appelle HelloJobScheduler.scheduledLaunch()
   │    └─ jobLauncher.run(helloJob, {launchTime=...})
@@ -551,6 +563,38 @@ Pour un lancement du job :
 Le point important est la mise à jour **après chaque chunk, dans la même transaction**. Si le chunk 3 plante, sa transaction est annulée, mais les chunks 1 et 2 sont validés, et les compteurs et le contexte en base le reflètent exactement (4 éléments lus et écrits). La base ne peut jamais indiquer « 6 écrits » alors que seulement 4 le sont réellement : c'est ce qui rend la reprise fiable.
 
 Les tables ne font que **grossir** : Spring Batch ajoute des lignes et n'en supprime jamais. Avec le scheduler, chaque lancement ajoute 1 instance, 1 exécution, 1 paramètre, 1 contexte de job, 2 exécutions de step et 2 contextes de step. Avec H2 en mémoire, tout disparaît à l'arrêt de l'application. Sur une vraie base, il faut prévoir une **purge régulière**, que Spring Batch ne fait pas lui-même.
+
+### Consulter la base avec la console H2
+
+La console H2 est une petite application web fournie par H2. Spring Boot la publie sur **http://localhost:8080/h2-console** grâce à `spring.h2.console.enabled=true` et à `spring-boot-starter-web`, qui apporte le serveur web. On s'y connecte avec la JDBC URL **`jdbc:h2:mem:testdb`**, l'utilisateur `sa` et un mot de passe vide.
+
+Une base H2 « en mémoire » n'existe qu'à l'intérieur de la JVM qui l'a créée : un outil SQL externe ne pourrait pas s'y connecter. La console fonctionne parce qu'elle tourne **dans la même JVM** que l'application. Elle ouvre la base par son nom (`testdb`, le nom par défaut choisi par Spring Boot 1.5) et retrouve donc exactement les tables utilisées par le job.
+
+Requêtes utiles :
+
+```sql
+-- Les données lues par le job
+SELECT * FROM PERSON;
+
+-- Une ligne par lancement du scheduler
+SELECT JOB_INSTANCE_ID, JOB_NAME, JOB_KEY FROM BATCH_JOB_INSTANCE;
+
+-- Statut et durée de chaque exécution
+SELECT JOB_EXECUTION_ID, STATUS, EXIT_CODE, START_TIME, END_TIME FROM BATCH_JOB_EXECUTION;
+
+-- Le paramètre launchTime de chaque exécution
+SELECT JOB_EXECUTION_ID, KEY_NAME, LONG_VAL FROM BATCH_JOB_EXECUTION_PARAMS;
+
+-- Les compteurs de chaque step : 5 lus, 5 écrits, 3 commits pour greetStep
+SELECT STEP_EXECUTION_ID, JOB_EXECUTION_ID, STEP_NAME, STATUS,
+       READ_COUNT, FILTER_COUNT, WRITE_COUNT, COMMIT_COUNT, ROLLBACK_COUNT
+FROM BATCH_STEP_EXECUTION ORDER BY STEP_EXECUTION_ID;
+
+-- La position enregistrée par le reader (JdbcPagingItemReader.start.after, read.count)
+SELECT STEP_EXECUTION_ID, SHORT_CONTEXT FROM BATCH_STEP_EXECUTION_CONTEXT;
+```
+
+Astuce : relance une requête après un passage du scheduler (toutes les 5 minutes, ou toutes les 10 secondes avec `--hello.scheduler.cron=*/10 * * * * *`) pour voir les nouvelles lignes s'ajouter.
 
 ### Voir les requêtes dans les logs
 
@@ -736,6 +780,7 @@ public class HelloJobTest {
 | Cron Unix à 5 champs (`*/5 * * * *`) | Erreur au démarrage : `Cron expression must consist of 6 fields` | Ajouter le champ des secondes en tête : `0 */5 * * * *` |
 | Plusieurs `Job` dans le contexte | Spring Boot les lance **tous** au démarrage | Préciser `spring.batch.job.names=monJob` (avec un « s » en Spring Boot 1.x) |
 | Pas de base de données | Erreur au démarrage : aucune `DataSource` | Ajouter une base (H2 pour apprendre) |
+| Console H2 : mauvaise JDBC URL | `Database "..." not found, and IFEXISTS=true, so we cant auto-create it` : la console vise une autre base, et H2 lui interdit d'en créer une | JDBC URL `jdbc:h2:mem:testdb` (et non la valeur préremplie `jdbc:h2:~/test`), application démarrée |
 | JDK 11+ sans `javax.annotation-api` | `Table "BATCH_JOB_INSTANCE" not found` | Ajouter la dépendance (voir [5.1](#51-pomxml)) |
 | JDK 16+ sans `--add-opens` | `InaccessibleObjectException ... does not "opens java.lang"` | Options `--add-opens` (voir [5.1](#51-pomxml)) |
 | Code Java 9+ (`List.of`, `var`, `record`...) | Erreur de compilation avec `java.version` 1.8 | Équivalents Java 8 : `Arrays.asList`, types explicites, classes classiques |
@@ -747,7 +792,7 @@ public class HelloJobTest {
 Idées pour faire évoluer cet exemple, dans un ordre progressif :
 
 1. **Lire un fichier CSV** avec `FlatFileItemReader` et le transformer en objets (une classe `Person` avec `firstName` et `lastName`). En Spring Batch 3, il n'y a pas de `FlatFileItemReaderBuilder` : on assemble soi-même un `FlatFileItemReader`, un `DefaultLineMapper`, un `DelimitedLineTokenizer` et un `BeanWrapperFieldSetMapper`.
-2. **Écrire en base** avec `JdbcBatchItemWriter`, puis observer les tables `BATCH_*` avec la console H2 (`spring.h2.console.enabled=true`, qui nécessite aussi `spring-boot-starter-web`).
+2. **Écrire en base** avec `JdbcBatchItemWriter` (par exemple les salutations dans une table `GREETING`), puis observer le résultat dans la console H2.
 3. **Passer des paramètres au job** : en ajouter dans `HelloJobScheduler.launch()` (par exemple `.addString("fichier", "data.csv")`) et les lire avec `@Value("#{jobParameters['fichier']}")` dans un bean `@StepScope`. (Sans scheduler, avec le lancement au démarrage par Spring Boot, ils viendraient de la ligne de commande : `java -jar hello-batch.jar fichier=data.csv`.)
 4. **Gérer les erreurs** : `.faultTolerant().skip(FlatFileParseException.class).skipLimit(10)` pour ignorer les lignes invalides, `.retry(...)` pour réessayer.
 5. **Tester la reprise** : faire échouer le job au milieu, puis le relancer avec les mêmes paramètres et constater qu'il reprend où il s'était arrêté.

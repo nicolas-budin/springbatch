@@ -43,6 +43,13 @@
             <artifactId>h2</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- Serveur web (Tomcat embarqué, port 8080) : uniquement pour la console H2,
+             une petite application web fournie par H2 pour consulter la base depuis un
+             navigateur (voir spring.h2.console.enabled dans application.properties). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
 
         <!-- Les annotations javax.annotation (@PostConstruct, @Resource...) faisaient partie
              du JDK jusqu'à Java 10, puis ont été retirées. Spring Boot 1.5 s'en sert
