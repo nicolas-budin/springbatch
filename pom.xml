@@ -4,6 +4,9 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <!-- Le "parent" Spring Boot fixe les versions de toutes les dépendances Spring
+         (Spring Boot 3.5.x embarque Spring Batch 5.2.x) : on n'a donc pas besoin
+         d'indiquer de version sur les dépendances ci-dessous. -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
@@ -22,6 +25,8 @@
     </properties>
 
     <dependencies>
+        <!-- Spring Batch + son auto-configuration Spring Boot
+             (JobRepository, JobLauncher, lancement du job au démarrage...). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-batch</artifactId>
@@ -34,11 +39,13 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Tests : JUnit 5, AssertJ, support de test Spring Boot. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Outils de test Spring Batch : @SpringBatchTest, JobLauncherTestUtils... -->
         <dependency>
             <groupId>org.springframework.batch</groupId>
             <artifactId>spring-batch-test</artifactId>
@@ -48,6 +55,7 @@
 
     <build>
         <plugins>
+            <!-- Permet "mvn spring-boot:run" et construit un jar exécutable ("mvn package"). -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
