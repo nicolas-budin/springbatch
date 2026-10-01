@@ -13,13 +13,13 @@ import org.springframework.test.context.junit4.SpringRunner;
 
 /**
  * Vérifie que le job peut être lancé plusieurs fois de suite dans la même application,
- * comme le fait le scheduler toutes les 5 minutes.
+ * comme le fait Quartz toutes les 5 minutes.
  *
- * <p>On n'attend pas 5 minutes : le scheduler est désactivé et on appelle directement
- * {@link HelloJobScheduler#launch()}, la méthode que le scheduler appelle.
+ * <p>On n'attend pas 5 minutes : Quartz est désactivé et on appelle directement
+ * {@link HelloJobScheduler#launch()}, la méthode que le job Quartz ({@link HelloQuartzJob}) appelle.
  */
 @RunWith(SpringRunner.class)
-// Comme dans HelloJobTest : pas de lancement au démarrage, pas de scheduler.
+// Comme dans HelloJobTest : pas de lancement au démarrage, pas de Quartz.
 @SpringBootTest(properties = {"spring.batch.job.enabled=false", "hello.scheduler.enabled=false"})
 public class HelloJobSchedulerTest {
 

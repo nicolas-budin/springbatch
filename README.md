@@ -2,7 +2,7 @@
 
 Un exemple minimal et commenté pour comprendre **Spring Batch 3** avec **Spring Boot 1.5**.
 
-Le job affiche un message, puis lit une liste de noms dans une table de la base (JDBC) et la transforme en salutations, en les traitant par paquets. Il est lancé **toutes les 5 minutes** par le scheduler de Spring.
+Le job affiche un message, puis lit une liste de noms dans une table de la base (JDBC) et la transforme en salutations, en les traitant par paquets. Il est lancé **toutes les 5 minutes** par l'ordonnanceur Quartz.
 
 - Java 8 (le code compile en Java 8, mais tourne aussi sur un JDK récent : voir [section 1](#1-lancer-lexemple))
 - Spring Boot 1.5.22 (qui embarque Spring Batch 3.0.10 et Spring Framework 4.3)
@@ -43,7 +43,7 @@ mvn package
 java -jar target/hello-batch-0.0.1-SNAPSHOT.jar
 
 # Pour tester sans attendre : lancer le job toutes les 10 secondes
-java -jar target/hello-batch-0.0.1-SNAPSHOT.jar "--hello.scheduler.cron=*/10 * * * * *"
+java -jar target/hello-batch-0.0.1-SNAPSHOT.jar "--hello.scheduler.cron=*/10 * * * * ?"
 ```
 
 L'application **ne s'arrête plus d'elle-même** : elle attend le prochain lancement. Au démarrage, rien ne se passe avant la première échéance (par exemple 12:05 si on démarre à 12:03).
@@ -84,7 +84,7 @@ Executing step: [greetStep]
 Job: [SimpleJob: [name=helloJob]] completed ... and the following status: [COMPLETED]
 ```
 
-Les logs du job indiquent le thread `[pool-2-thread-1]` : c'est le thread du scheduler, et non plus `[main]`.
+Les logs du job indiquent le thread `[schedulerFactoryBean_Worker-1]` (puis `-2`, `-3`...) : c'est un thread du pool de Quartz, et non plus `[main]`.
 
 Entre ces lignes, on voit aussi les requêtes SQL que Spring Batch exécute sur ses tables (`Executing prepared SQL statement [...]`), voir [section 7](#7-le-jobrepository-et-les-tables-de-métadonnées).
 
@@ -156,8 +156,9 @@ Pour distinguer **JobInstance** et **JobExecution** : si l'import du 30/09 écho
     ├── main/java/com/example/hellobatch
     │   ├── HelloBatchApplication.java        Point d'entrée Spring Boot
     │   ├── HelloJobConfig.java               Définition du job et de ses steps
-    │   ├── HelloJobScheduler.java            Lance le job toutes les 5 minutes
-    │   └── SchedulingConfig.java             Active le scheduler de Spring
+    │   ├── HelloJobScheduler.java            Lance une exécution du job (launch())
+    │   ├── HelloQuartzJob.java               Job Quartz : appelé à chaque échéance, appelle launch()
+    │   └── QuartzConfig.java                 Configuration de Quartz (JobDetail, Trigger cron, Scheduler)
     ├── main/resources
     │   ├── application.properties            Pas de lancement au démarrage, fréquence (cron), logs SQL
     │   ├── schema.sql                        Création de la table PERSON (exécuté au démarrage)
@@ -191,6 +192,8 @@ Le parent Spring Boot fixe les versions de toutes les dépendances Spring. Sprin
 | `spring-boot-starter-batch` | Spring Batch + l'auto-configuration Spring Boot (création des tables, lancement automatique du job...) |
 | `h2` | Base en mémoire. Spring Batch **a besoin d'une base** pour stocker ses métadonnées. |
 | `spring-boot-starter-web` | Serveur web Tomcat embarqué (port 8080), uniquement pour la **console H2** : une petite application web fournie par H2 pour consulter la base dans le navigateur. Activée par `spring.h2.console.enabled=true` dans `application.properties`. |
+| `quartz` (2.3.2) | L'ordonnanceur qui lance le job toutes les 5 minutes. Version explicite, car Spring Boot 1.5 ne gère pas Quartz. `c3p0` et `HikariCP-java7` sont exclus : ils ne servent qu'au stockage des planifications en base. |
+| `spring-context-support` | L'intégration Spring de Quartz : `SchedulerFactoryBean`, `JobDetailFactoryBean`, `CronTriggerFactoryBean`, `QuartzJobBean` |
 | `javax.annotation-api` | Les annotations `@PostConstruct`, `@Resource`... Elles faisaient partie du JDK jusqu'à Java 10. Voir ci-dessous. |
 | `spring-boot-starter-test` | JUnit 4, AssertJ, `@SpringBootTest` |
 | `spring-batch-test` | `JobLauncherTestUtils` |
@@ -222,11 +225,11 @@ Au démarrage, deux mécanismes travaillent ensemble :
    - crée les **tables de métadonnées** `BATCH_*` dans cette base (automatique pour une base embarquée).
    - exécute `schema.sql` puis `data.sql` (dans `src/main/resources`) : la table `PERSON` lue par le job.
 
-Par défaut, Spring Boot lancerait aussi le job une fois au démarrage (composant `JobLauncherCommandLineRunner`). C'est désactivé dans `application.properties` (`spring.batch.job.enabled=false`) : c'est le scheduler qui lance le job (voir [5.4](#54-le-scheduler--lancer-le-job-toutes-les-5-minutes)).
+Par défaut, Spring Boot lancerait aussi le job une fois au démarrage (composant `JobLauncherCommandLineRunner`). C'est désactivé dans `application.properties` (`spring.batch.job.enabled=false`) : c'est Quartz qui lance le job (voir [5.4](#54-quartz--lancer-le-job-toutes-les-5-minutes)).
 
-`SpringApplication.run(...)` démarre le contexte puis rend la main, mais l'application continue de tourner : le thread du scheduler garde la JVM en vie. On l'arrête avec Ctrl+C.
+`SpringApplication.run(...)` démarre le contexte puis rend la main, mais l'application continue de tourner : les threads de Quartz et de Tomcat gardent la JVM en vie. On l'arrête avec Ctrl+C.
 
-> Sans scheduler, on écrit plutôt `System.exit(SpringApplication.exit(SpringApplication.run(...)))` : l'application s'arrête dès la fin du job et renvoie un code de sortie (0 = succès) à l'ordonnanceur externe qui l'a lancée (cron, Control-M...). C'était le cas dans les versions précédentes de ce projet.
+> Sans ordonnanceur dans l'application, on écrit plutôt `System.exit(SpringApplication.exit(SpringApplication.run(...)))` : l'application s'arrête dès la fin du job et renvoie un code de sortie (0 = succès) à l'ordonnanceur externe qui l'a lancée (cron, Control-M...). C'était le cas dans les versions précédentes de ce projet.
 
 > ⚠️ Avec Spring Boot 1.x, **`@EnableBatchProcessing` est obligatoire** : sans elle, pas de `JobBuilderFactory` / `StepBuilderFactory`. C'est l'inverse avec Spring Boot 3 / Spring Batch 5, où cette annotation désactive l'auto-configuration. Il faut garder ça en tête quand on lit du code écrit pour une autre version.
 
@@ -412,24 +415,99 @@ public Job helloJob(Step helloStep, Step greetStep) {
 - `start(...).next(...)` : exécution séquentielle. Si un step échoue, le job s'arrête en statut `FAILED` et les steps suivants ne sont pas exécutés.
 - Spring Batch permet aussi des flux conditionnels, par exemple `.on("FAILED").to(stepDeSecours)`.
 
-### 5.4 Le scheduler : lancer le job toutes les 5 minutes
+### 5.4 Quartz : lancer le job toutes les 5 minutes
 
-Spring Batch **ne sait pas planifier** un job : il sait seulement l'exécuter quand on le lui demande, via le `JobLauncher`. La planification est le rôle d'un autre outil. Ici, c'est le scheduler intégré à Spring Framework, donc aucune dépendance à ajouter.
+Spring Batch **ne sait pas planifier** un job : il sait seulement l'exécuter quand on le lui demande, via le `JobLauncher`. La planification est le rôle d'un autre outil. Ici, c'est **Quartz**, l'ordonnanceur Java le plus répandu dans les applications d'entreprise.
 
-**`SchedulingConfig.java`** active le scheduler :
+**Deux sortes de « jobs »**, à ne pas confondre :
+- le **job Quartz** (`HelloQuartzJob`) dit **quand** faire quelque chose. C'est une simple tâche planifiée, qui ne sait rien de Spring Batch ;
+- le **job Spring Batch** (`helloJob`) dit **quoi** faire : steps, chunks, reader, processor, writer, métadonnées en base.
+
+Ici, le job Quartz se contente de lancer le job Spring Batch :
+
+```
+Quartz, à 12:05 ─▶ HelloQuartzJob.executeInternal() ─▶ HelloJobScheduler.launch() ─▶ jobLauncher.run(helloJob, {launchTime})
+```
+
+#### `QuartzConfig.java` : les trois briques de Quartz
+
+| Brique | Rôle | Ici |
+|---|---|---|
+| `JobDetail` | **Quoi** exécuter | la classe `HelloQuartzJob` |
+| `Trigger` | **Quand** l'exécuter | un cron, `hello.scheduler.cron` |
+| `Scheduler` | Le moteur : surveille les triggers et exécute les jobs dans son pool de threads | `SchedulerFactoryBean` |
 
 ```java
 @Configuration
-@EnableScheduling
 @ConditionalOnProperty(name = "hello.scheduler.enabled", matchIfMissing = true)
-public class SchedulingConfig {
+public class QuartzConfig {
+
+    @Bean
+    public JobDetailFactoryBean helloJobDetail() {
+        JobDetailFactoryBean factory = new JobDetailFactoryBean();
+        factory.setJobClass(HelloQuartzJob.class);
+        factory.setDurability(true);
+        ...
+    }
+
+    @Bean
+    public CronTriggerFactoryBean helloTrigger(JobDetail jobDetail, @Value("${hello.scheduler.cron}") String cron) {
+        CronTriggerFactoryBean factory = new CronTriggerFactoryBean();
+        factory.setJobDetail(jobDetail);
+        factory.setCronExpression(cron);
+        ...
+    }
+
+    @Bean
+    public SchedulerFactoryBean schedulerFactoryBean(JobDetail jobDetail, Trigger trigger, ApplicationContext ctx) {
+        SchedulerFactoryBean factory = new SchedulerFactoryBean();
+        factory.setJobDetails(jobDetail);
+        factory.setTriggers(trigger);
+        factory.setJobFactory(new AutowiringSpringBeanJobFactory(ctx));
+        factory.setWaitForJobsToCompleteOnShutdown(true);
+        return factory;
+    }
 }
 ```
 
-- Sans `@EnableScheduling`, les méthodes `@Scheduled` ne sont **jamais appelées**, et sans aucun message d'erreur.
-- `@ConditionalOnProperty` permet de couper le scheduler avec `hello.scheduler.enabled=false`. Les tests s'en servent. C'est pour ça que l'annotation est dans sa propre classe, et pas sur `HelloBatchApplication`.
+- **Tout est configuré à la main.** Spring Boot 1.5 ne connaît pas Quartz : ni version gérée (d'où `<version>2.3.2</version>` dans le `pom.xml`), ni auto-configuration (le `spring-boot-starter-quartz` n'existe qu'à partir de Spring Boot 2.0). Les classes `*FactoryBean` viennent de `spring-context-support`.
+- **`@ConditionalOnProperty`** permet de couper Quartz avec `hello.scheduler.enabled=false`. Les tests s'en servent : ce sont eux qui décident quand lancer le job, pas l'horloge.
+- **`setWaitForJobsToCompleteOnShutdown(true)`** : à l'arrêt (Ctrl+C), Quartz attend la fin d'un job en cours au lieu de le couper au milieu.
+- **Planifications en mémoire (`RAMJobStore`).** Aucune `DataSource` n'est donnée au `SchedulerFactoryBean` : Quartz garde ses planifications en mémoire et les recrée au démarrage à partir de cette configuration. On le voit dans les logs : `Using job-store 'org.quartz.simpl.RAMJobStore' - which does not support persistence. and is not clustered.` Avec une `DataSource`, il les stockerait dans des tables `QRTZ_*`. C'est ce qui permet le **mode cluster** (une seule instance de l'application exécute chaque échéance) et le **rattrapage des échéances manquées** pendant un arrêt. C'est inutile ici : une seule instance, et une base H2 elle-même en mémoire. C'est pour ça que les dépendances `c3p0` et `HikariCP-java7`, qui ne servent qu'à ce stockage, sont exclues dans le `pom.xml`.
 
-**`HelloJobScheduler.java`** lance le job :
+#### Le cron de Quartz
+
+L'expression vient de `application.properties` : `hello.scheduler.cron=0 */5 * * * ?`, soit « à la seconde 0 de chaque minute multiple de 5 ». Comme le cron de Spring, il a **6 champs** : `seconde minute heure jour-du-mois mois jour-de-la-semaine`. Mais Quartz impose que **l'un des deux champs « jour » vaille `?`** (« peu importe »), car il refuse qu'on précise à la fois un jour du mois et un jour de la semaine. Avec `0 */5 * * * *` (valable pour `@Scheduled`), l'application ne démarre pas :
+
+```
+java.text.ParseException: Support for specifying both a day-of-week AND a day-of-month parameter is not implemented.
+```
+
+#### `HelloQuartzJob.java` : le job Quartz
+
+```java
+@DisallowConcurrentExecution
+public class HelloQuartzJob extends QuartzJobBean {
+
+    @Autowired
+    private HelloJobScheduler scheduler;
+
+    @Override
+    protected void executeInternal(JobExecutionContext context) throws JobExecutionException {
+        try {
+            scheduler.launch();
+        } catch (Exception e) {
+            throw new JobExecutionException("Échec du lancement de helloJob", e);
+        }
+    }
+}
+```
+
+- **Ce n'est pas un bean Spring.** Quartz crée lui-même **une nouvelle instance** de cette classe à chaque échéance, en dehors de Spring. Pour que le champ `@Autowired` soit rempli, `QuartzConfig` donne à Quartz une *JobFactory* (`AutowiringSpringBeanJobFactory`) qui crée l'instance puis demande à Spring d'y injecter les dépendances. Sans elle, `scheduler` serait `null` et on aurait une `NullPointerException` à la première échéance. (En Spring 4.3, la `SpringBeanJobFactory` de base ne le fait pas d'elle-même ; les versions récentes le font.)
+- **`@DisallowConcurrentExecution`** : Quartz exécute ses jobs dans un **pool de 10 threads** (`SimpleThreadPool`). Si un lancement durait plus de 5 minutes, le suivant démarrerait en parallèle sur un autre thread. Cette annotation l'interdit : l'échéance suivante attend la fin de la précédente.
+- Quartz n'accepte que des `JobExecutionException` : on « emballe » l'erreur. Quartz la journalise, et le trigger continue de se déclencher aux échéances suivantes.
+
+#### `HelloJobScheduler.java` : le lancement du job Spring Batch
 
 ```java
 @Component
@@ -441,11 +519,6 @@ public class HelloJobScheduler {
     @Autowired
     private Job helloJob;
 
-    @Scheduled(cron = "${hello.scheduler.cron}")
-    public void scheduledLaunch() throws Exception {
-        launch();
-    }
-
     public JobExecution launch() throws Exception {
         JobParameters parameters = new JobParametersBuilder()
                 .addLong("launchTime", System.currentTimeMillis())
@@ -455,12 +528,26 @@ public class HelloJobScheduler {
 }
 ```
 
-- **L'expression cron** vient de `application.properties` : `hello.scheduler.cron=0 */5 * * * *`. Le cron de Spring a **6 champs**, et non 5 comme le cron Unix, car il commence par les secondes : `seconde minute heure jour-du-mois mois jour-de-la-semaine`. `0 */5 * * * *` veut dire « à la seconde 0 de chaque minute multiple de 5 ».
-- **Les alternatives au cron** : `@Scheduled(fixedRate = 300000)` lance toutes les 300 000 ms, avec un premier lancement dès le démarrage. `@Scheduled(fixedDelay = 300000)` attend 5 minutes après la *fin* du lancement précédent.
 - **Le paramètre `launchTime` est indispensable.** Une JobInstance est identifiée par le nom du job et ses paramètres (voir [section 7](#7-le-jobrepository-et-les-tables-de-métadonnées)). Avec des paramètres identiques à chaque fois, le 2e lancement serait vu comme la même JobInstance, déjà terminée, et Spring Batch le refuserait (`JobInstanceAlreadyCompleteException`). L'heure du lancement rend chaque JobInstance unique.
 - **`@StepScope` sur le reader devient indispensable** : le job tourne plusieurs fois dans la même application. Sans lui, le 2e lancement ne lirait rien (voir [le reader](#le-reader--namesreader)).
-- **Pas de chevauchement** : le scheduler par défaut n'a qu'un seul thread. Si un lancement dure plus de 5 minutes, le suivant attend qu'il soit terminé.
-- `launch()` est séparée de la méthode `@Scheduled` pour que le test puisse l'appeler directement, sans attendre l'horloge.
+- Cette classe ne dépend pas de Quartz : le test l'appelle directement, sans attendre l'horloge.
+
+#### `@Scheduled` ou Quartz ?
+
+Une version précédente de ce projet utilisait le scheduler intégré à Spring (`@EnableScheduling` + `@Scheduled(cron = "...")`), plus simple :
+
+| | `@Scheduled` (Spring) | Quartz |
+|---|---|---|
+| Dépendances | Aucune, inclus dans `spring-context` | `quartz` + `spring-context-support` |
+| Configuration | Une annotation | `JobDetail`, `Trigger`, `SchedulerFactoryBean`, *JobFactory* |
+| Threads | 1 par défaut : pas de chevauchement | Pool de 10 : `@DisallowConcurrentExecution` nécessaire |
+| Cron | 6 champs, `*` accepté partout | 6 champs (+ année optionnelle), `?` obligatoire pour un des champs « jour » |
+| Planifications | En mémoire | En mémoire (`RAMJobStore`) **ou en base** (`QRTZ_*`) |
+| Plusieurs instances de l'application | Chacune lance le job : exécutions **en double** | Mode cluster (avec stockage en base) : une seule exécute |
+| Échéance manquée pendant un arrêt | Perdue | Rattrapage configurable (*misfire*), avec stockage en base |
+| Modifier les planifications à chaud | Non | Oui, par l'API `Scheduler` |
+
+`@Scheduled` suffit pour une application seule avec des planifications fixes. Quartz devient utile dès qu'il y a plusieurs instances, un besoin de ne perdre aucune échéance, ou des planifications gérées dynamiquement.
 
 ---
 
@@ -476,12 +563,12 @@ mvn spring-boot:run
   │    ├─ @EnableBatchProcessing : JobRepository, JobLauncher, TransactionManager,
   │    │                           JobBuilderFactory, StepBuilderFactory
   │    ├─ crée les beans de HelloJobConfig (helloStep, greetStep, helloJob)
-  │    ├─ @EnableScheduling : démarre le thread du scheduler
+  │    ├─ QuartzConfig : démarre Quartz (RAMJobStore, pool de 10 threads)
   │    └─ démarre Tomcat sur le port 8080 (console H2 : /h2-console)
   │
-  ├─ main() se termine, mais la JVM reste en vie (threads du scheduler et de Tomcat)
+  ├─ main() se termine, mais la JVM reste en vie (threads de Quartz et de Tomcat)
   │
-  ├─ à 12:05, 12:10, 12:15... le scheduler appelle HelloJobScheduler.scheduledLaunch()
+  ├─ à 12:05, 12:10, 12:15... Quartz exécute HelloQuartzJob → HelloJobScheduler.launch()
   │    └─ jobLauncher.run(helloJob, {launchTime=...})
   │         ├─ nouvelle JobInstance + JobExecution créées en base  (statut STARTED)
   │         ├─ helloStep : exécute la tasklet                     (StepExecution COMPLETED)
@@ -562,7 +649,7 @@ Pour un lancement du job :
 
 Le point important est la mise à jour **après chaque chunk, dans la même transaction**. Si le chunk 3 plante, sa transaction est annulée, mais les chunks 1 et 2 sont validés, et les compteurs et le contexte en base le reflètent exactement (4 éléments lus et écrits). La base ne peut jamais indiquer « 6 écrits » alors que seulement 4 le sont réellement : c'est ce qui rend la reprise fiable.
 
-Les tables ne font que **grossir** : Spring Batch ajoute des lignes et n'en supprime jamais. Avec le scheduler, chaque lancement ajoute 1 instance, 1 exécution, 1 paramètre, 1 contexte de job, 2 exécutions de step et 2 contextes de step. Avec H2 en mémoire, tout disparaît à l'arrêt de l'application. Sur une vraie base, il faut prévoir une **purge régulière**, que Spring Batch ne fait pas lui-même.
+Les tables ne font que **grossir** : Spring Batch ajoute des lignes et n'en supprime jamais. Avec Quartz, chaque lancement ajoute 1 instance, 1 exécution, 1 paramètre, 1 contexte de job, 2 exécutions de step et 2 contextes de step. Avec H2 en mémoire, tout disparaît à l'arrêt de l'application. Sur une vraie base, il faut prévoir une **purge régulière**, que Spring Batch ne fait pas lui-même.
 
 ### Consulter la base avec la console H2
 
@@ -576,7 +663,7 @@ Requêtes utiles :
 -- Les données lues par le job
 SELECT * FROM PERSON;
 
--- Une ligne par lancement du scheduler
+-- Une ligne par lancement (par échéance Quartz)
 SELECT JOB_INSTANCE_ID, JOB_NAME, JOB_KEY FROM BATCH_JOB_INSTANCE;
 
 -- Statut et durée de chaque exécution
@@ -594,7 +681,7 @@ FROM BATCH_STEP_EXECUTION ORDER BY STEP_EXECUTION_ID;
 SELECT STEP_EXECUTION_ID, SHORT_CONTEXT FROM BATCH_STEP_EXECUTION_CONTEXT;
 ```
 
-Astuce : relance une requête après un passage du scheduler (toutes les 5 minutes, ou toutes les 10 secondes avec `--hello.scheduler.cron=*/10 * * * * *`) pour voir les nouvelles lignes s'ajouter.
+Astuce : relance une requête après une échéance de Quartz (toutes les 5 minutes, ou toutes les 10 secondes avec `--hello.scheduler.cron=*/10 * * * * ?`) pour voir les nouvelles lignes s'ajouter.
 
 ### Voir les requêtes dans les logs
 
@@ -719,7 +806,7 @@ Ce calcul est faux ou sans objet dans ces cas :
 
 ### Relancer un job
 
-Relancer `helloJob` avec les mêmes paramètres échouerait donc la 2e fois. C'est pour ça que le scheduler passe un paramètre `launchTime` qui change à chaque lancement. Il existe aussi le `RunIdIncrementer` (`.incrementer(new RunIdIncrementer())`), mais il n'est utilisé que par certains lanceurs (`JobLauncherCommandLineRunner`, `JobOperator.startNextInstance`), pas par un appel direct à `jobLauncher.run(...)`.
+Relancer `helloJob` avec les mêmes paramètres échouerait donc la 2e fois. C'est pour ça que `HelloJobScheduler.launch()` passe un paramètre `launchTime` qui change à chaque lancement. Il existe aussi le `RunIdIncrementer` (`.incrementer(new RunIdIncrementer())`), mais il n'est utilisé que par certains lanceurs (`JobLauncherCommandLineRunner`, `JobOperator.startNextInstance`), pas par un appel direct à `jobLauncher.run(...)`.
 
 ---
 
@@ -756,13 +843,13 @@ public class HelloJobTest {
 - `@SpringBootTest` démarre le contexte Spring complet, comme l'application.
 - C'est le test qui doit décider quand lancer le job, pas le démarrage ni l'horloge :
   - `spring.batch.job.enabled=false` **désactive le lancement automatique** au démarrage (c'est déjà le cas dans `application.properties`, mais le test le rend explicite) ;
-  - `hello.scheduler.enabled=false` **désactive le scheduler** (voir [5.4](#54-le-scheduler--lancer-le-job-toutes-les-5-minutes)).
+  - `hello.scheduler.enabled=false` **désactive Quartz** (voir [5.4](#54-quartz--lancer-le-job-toutes-les-5-minutes)).
 - Le bean `JobLauncherTestUtils` est **déclaré à la main** dans une `@TestConfiguration` (l'annotation `@SpringBatchTest`, qui le fait automatiquement, n'existe qu'à partir de Spring Batch 4.1). Ses setters sont `@Autowired` : il reçoit l'unique bean `Job`, le `JobLauncher` et le `JobRepository`.
 - `launchJob()` lance le job **de façon synchrone** avec des paramètres uniques (un nombre aléatoire). Chaque appel crée donc une nouvelle JobInstance et le test peut être rejoué sans erreur « job déjà terminé ».
 - On vérifie ensuite le résultat grâce aux métadonnées : le statut du job et les compteurs du `StepExecution` de `greetStep`.
 - `JobLauncherTestUtils` permet aussi de tester **un seul step** : `launchStep("greetStep")`.
 
-`src/test/java/com/example/hellobatch/HelloJobSchedulerTest.java` vérifie ce que fait le scheduler toutes les 5 minutes, sans attendre : il appelle deux fois de suite `HelloJobScheduler.launch()` et vérifie que :
+`src/test/java/com/example/hellobatch/HelloJobSchedulerTest.java` vérifie ce que fait Quartz toutes les 5 minutes, sans attendre : il appelle deux fois de suite `HelloJobScheduler.launch()` et vérifie que :
 - les deux lancements se terminent en `COMPLETED`, avec deux JobInstances différentes (grâce au paramètre `launchTime`) ;
 - le 2e lancement lit bien 5 noms (grâce à `@StepScope` sur le reader).
 
@@ -775,9 +862,10 @@ public class HelloJobTest {
 | Oublier `@EnableBatchProcessing` (Spring Boot 1.x) | Aucun bean `JobBuilderFactory` / `StepBuilderFactory` au démarrage | Ajouter l'annotation sur une classe `@Configuration` |
 | Reader avec état déclaré en singleton | Le 2e lancement du job ne lit rien (0 élément) | `@StepScope` sur le bean reader (ou `scope="step"` en XML) |
 | Méthode `@Bean @StepScope` qui déclare `ItemReader<T>` en retour | `ReaderNotOpenException` : le proxy n'implémente pas `ItemStream`, donc `open()` n'est jamais appelé | Déclarer le type concret (`JdbcPagingItemReader<T>`, `FlatFileItemReader<T>`...) ou `ItemStreamReader<T>` |
-| Relancer un job terminé avec les mêmes paramètres | `JobInstanceAlreadyCompleteException` (par exemple au 2e passage du scheduler) | Paramètres différents à chaque lancement (`launchTime`), ou `RunIdIncrementer` |
-| Oublier `@EnableScheduling` | Les méthodes `@Scheduled` ne sont jamais appelées, sans aucune erreur | Ajouter l'annotation sur une classe `@Configuration` |
-| Cron Unix à 5 champs (`*/5 * * * *`) | Erreur au démarrage : `Cron expression must consist of 6 fields` | Ajouter le champ des secondes en tête : `0 */5 * * * *` |
+| Relancer un job terminé avec les mêmes paramètres | `JobInstanceAlreadyCompleteException` (par exemple à la 2e échéance de Quartz) | Paramètres différents à chaque lancement (`launchTime`), ou `RunIdIncrementer` |
+| Cron au format Spring (`0 */5 * * * *`) avec Quartz | Démarrage impossible : `ParseException: Support for specifying both a day-of-week AND a day-of-month parameter is not implemented` | Mettre `?` dans un des champs « jour » : `0 */5 * * * ?` |
+| Job Quartz sans *JobFactory* qui injecte les beans | `NullPointerException` à la première échéance : les champs `@Autowired` du job Quartz sont `null` (Quartz crée l'instance hors de Spring) | `setJobFactory(...)` avec une `SpringBeanJobFactory` qui appelle `autowireBean` (voir `QuartzConfig`) |
+| Job Quartz sans `@DisallowConcurrentExecution` | Si un lancement dure plus longtemps que l'intervalle, le suivant démarre en parallèle (pool de 10 threads) | Annoter la classe du job Quartz |
 | Plusieurs `Job` dans le contexte | Spring Boot les lance **tous** au démarrage | Préciser `spring.batch.job.names=monJob` (avec un « s » en Spring Boot 1.x) |
 | Pas de base de données | Erreur au démarrage : aucune `DataSource` | Ajouter une base (H2 pour apprendre) |
 | Console H2 : mauvaise JDBC URL | `Database "..." not found, and IFEXISTS=true, so we cant auto-create it` : la console vise une autre base, et H2 lui interdit d'en créer une | JDBC URL `jdbc:h2:mem:testdb` (et non la valeur préremplie `jdbc:h2:~/test`), application démarrée |
@@ -798,8 +886,9 @@ Idées pour faire évoluer cet exemple, dans un ordre progressif :
 5. **Tester la reprise** : faire échouer le job au milieu, puis le relancer avec les mêmes paramètres et constater qu'il reprend où il s'était arrêté.
 6. **Ajouter des listeners** (`JobExecutionListener`, `StepExecutionListener`, `ChunkListener`) pour tracer le début et la fin des traitements. Un reader peut lui-même implémenter `StepExecutionListener` : sa méthode `beforeStep(StepExecution)` est appelée avant la première lecture.
 7. **Écrire le même job en XML** (`<batch:job>`, `<batch:step>`, `<batch:tasklet>`, `<batch:chunk reader="..." commit-interval="2"/>`), le style dominant dans les projets Spring Batch 2 et 3, et le charger avec `@ImportResource`.
-8. **Flux conditionnels** : `.on("FAILED").to(...)`, ou un `JobExecutionDecider`.
-9. **Paralléliser** : step multi-threadé (`.taskExecutor(...)`), partitionnement.
+8. **Quartz avec stockage en base** : donner une `DataSource` au `SchedulerFactoryBean` (tables `QRTZ_*`, scripts fournis dans le jar de Quartz), puis lancer deux instances de l'application en mode cluster et constater qu'une seule exécute chaque échéance.
+9. **Flux conditionnels** : `.on("FAILED").to(...)`, ou un `JobExecutionDecider`.
+10. **Paralléliser** : step multi-threadé (`.taskExecutor(...)`), partitionnement.
 
 Documentation officielle de Spring Batch 3 : <https://docs.spring.io/spring-batch/docs/3.0.x/reference/html/>
 

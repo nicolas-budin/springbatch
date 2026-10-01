@@ -25,7 +25,7 @@ import org.springframework.test.context.junit4.SpringRunner;
 // C'est le test qui doit décider quand lancer le job, pas le démarrage ni l'horloge :
 //  - spring.batch.job.enabled=false : pas de lancement automatique au démarrage
 //    (déjà dans application.properties, mais on le rend explicite ici) ;
-//  - hello.scheduler.enabled=false : pas de scheduler (voir SchedulingConfig).
+//  - hello.scheduler.enabled=false : pas d'ordonnanceur Quartz (voir QuartzConfig).
 @SpringBootTest(properties = {"spring.batch.job.enabled=false", "hello.scheduler.enabled=false"})
 public class HelloJobTest {
 

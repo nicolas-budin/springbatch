@@ -51,6 +51,39 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
+        <!-- Quartz : l'ordonnanceur qui déclenche helloJob toutes les 5 minutes (voir QuartzConfig).
+             Spring Boot 1.5 ne connaît pas Quartz (ni version gérée, ni auto-configuration :
+             spring-boot-starter-quartz n'existe qu'à partir de Spring Boot 2.0), d'où la version
+             explicite. 2.3.2 : dernière version compatible Java 8 de l'époque. -->
+        <dependency>
+            <groupId>org.quartz-scheduler</groupId>
+            <artifactId>quartz</artifactId>
+            <version>2.3.2</version>
+            <exclusions>
+                <!-- Pools de connexions que Quartz n'utilise que pour stocker ses planifications
+                     en base (JobStore JDBC). Ici, planifications en mémoire (RAMJobStore) :
+                     inutiles, on les exclut pour ne pas encombrer le classpath. -->
+                <exclusion>
+                    <groupId>com.mchange</groupId>
+                    <artifactId>c3p0</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.mchange</groupId>
+                    <artifactId>mchange-commons-java</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.zaxxer</groupId>
+                    <artifactId>HikariCP-java7</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- Intégration Spring de Quartz : SchedulerFactoryBean, JobDetailFactoryBean,
+             CronTriggerFactoryBean, QuartzJobBean (version gérée par Spring Boot). -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context-support</artifactId>
+        </dependency>
+
         <!-- Les annotations javax.annotation (@PostConstruct, @Resource...) faisaient partie
              du JDK jusqu'à Java 10, puis ont été retirées. Spring Boot 1.5 s'en sert
              notamment pour créer les tables BATCH_* (méthode @PostConstruct de

@@ -20,8 +20,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *
  * <p>Le job n'est <b>pas</b> lancé au démarrage (Spring Boot le ferait via
  * {@code JobLauncherCommandLineRunner}, mais {@code spring.batch.job.enabled=false} dans
- * {@code application.properties} le désactive) : c'est {@link HelloJobScheduler} qui le lance,
- * toutes les 5 minutes.
+ * {@code application.properties} le désactive) : c'est Quartz qui le lance toutes les 5 minutes
+ * (voir {@link QuartzConfig}).
  *
  * <p>Attention : avec Spring Boot 1.x / Spring Batch 3, {@code @EnableBatchProcessing} est
  * <b>obligatoire</b>. C'est l'inverse avec Spring Boot 3 / Spring Batch 5, où cette même
@@ -33,12 +33,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class HelloBatchApplication {
 
     public static void main(String[] args) {
-        // SpringApplication.run(...) démarre le contexte Spring, dont le scheduler, puis rend la main.
-        // L'application ne s'arrête pas pour autant : le scheduler tourne dans son propre thread
-        // (non "daemon"), qui garde la JVM en vie et lance le job toutes les 5 minutes.
+        // SpringApplication.run(...) démarre le contexte Spring, dont Quartz et Tomcat (console H2),
+        // puis rend la main. L'application ne s'arrête pas pour autant : les threads de Quartz et de
+        // Tomcat (non "daemon") gardent la JVM en vie, et Quartz lance le job toutes les 5 minutes.
         // On l'arrête avec Ctrl+C (ou un kill), ce qui ferme proprement le contexte Spring.
         //
-        // Avant l'ajout du scheduler, on écrivait :
+        // Avant l'ajout de l'ordonnanceur, on écrivait :
         //     System.exit(SpringApplication.exit(SpringApplication.run(HelloBatchApplication.class, args)));
         // pour arrêter l'application dès la fin du job et renvoyer un code de sortie (0 = succès)
         // à un ordonnanceur externe (cron, Control-M...). Ici ce n'est plus possible : l'application
