@@ -152,6 +152,7 @@ Pour distinguer **JobInstance** et **JobExecution** : si l'import du 30/09 écho
 .
 ├── pom.xml                                   Dépendances Maven
 ├── README.md                                 Ce fichier
+├── SCHEDULER.md                              Le scheduler Quartz expliqué en détail
 └── src
     ├── main/java/com/example/hellobatch
     │   ├── HelloBatchApplication.java        Point d'entrée Spring Boot
@@ -416,6 +417,8 @@ public Job helloJob(Step helloStep, Step greetStep) {
 - Spring Batch permet aussi des flux conditionnels, par exemple `.on("FAILED").to(stepDeSecours)`.
 
 ### 5.4 Quartz : lancer le job toutes les 5 minutes
+
+> Cette section résume le fonctionnement. **[SCHEDULER.md](SCHEDULER.md)** l'explique en détail : ce qui se passe au démarrage, à chaque échéance et à l'arrêt (avec les vrais logs), la syntaxe complète du cron Quartz, les threads, les échéances manquées, le stockage en base et le mode cluster.
 
 Spring Batch **ne sait pas planifier** un job : il sait seulement l'exécuter quand on le lui demande, via le `JobLauncher`. La planification est le rôle d'un autre outil. Ici, c'est **Quartz**, l'ordonnanceur Java le plus répandu dans les applications d'entreprise.
 

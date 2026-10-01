@@ -32,11 +32,12 @@ Toujours lancer `mvn test` **et** `mvn spring-boot:run` après une modification 
 - `src/test/java/com/example/hellobatch/HelloJobTest.java` : lance le job via `JobLauncherTestUtils` et vérifie le statut et les compteurs du step.
 - `src/test/java/com/example/hellobatch/HelloJobSchedulerTest.java` : appelle deux fois `HelloJobScheduler.launch()` et vérifie que les deux lancements réussissent.
 - `README.md` : explication détaillée du code et des concepts, en français.
+- `SCHEDULER.md` : le scheduler Quartz en détail (démarrage, échéances, cron, threads, misfire, JobStore, arrêt, pièges), avec de vrais logs.
 
 ## Conventions
 
 - Le but est **pédagogique** : code simple, commentaires **en français** et détaillés, qui expliquent le *pourquoi* (concepts Spring Batch), pas seulement le *quoi*. Garder ce niveau de commentaire pour tout nouveau code.
-- Quand le code change, mettre à jour `README.md` en même temps : extraits de code, sortie attendue, section « Pour aller plus loin ».
+- Quand le code change, mettre à jour `README.md` (et `SCHEDULER.md` si la planification change) en même temps : extraits de code, sortie attendue, section « Pour aller plus loin ».
 - Les messages de commit sont en anglais.
 
 ## Pièges connus
